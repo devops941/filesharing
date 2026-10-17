@@ -1,5 +1,32 @@
 {
-  "extends": "@react-native/typescript-config",
-  "include": ["**/*.ts", "**/*.tsx"],
-  "exclude": ["**/node_modules", "**/Pods"]
+  "compilerOptions": {
+    "target": "ES2019",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": [
+      "ES2019",
+      "ES2020"
+    ],
+    "jsx": "react-native",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "allowSyntheticDefaultImports": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "allowJs": true
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "App.tsx"
+  ],
+  "exclude": [
+    "node_modules",
+    "android",
+    "ios",
+    "__tests__"
+  ],
+  "extends": "expo/tsconfig.base"
 }

@@ -1,11 +1,10 @@
-const { getDefaultConfig, mergeConfig } = require('@react-native/metro-config');
+const { getDefaultConfig } = require('expo/metro-config');
+const config = getDefaultConfig(__dirname);
 
-/**
- * Metro configuration
- * https://reactnative.dev/docs/metro
- *
- * @type {import('@react-native/metro-config').MetroConfig}
- */
-const config = {};
+// Polyfill 'buffer' so react-native-tcp-socket and crypto code work
+config.resolver.extraNodeModules = {
+  ...config.resolver.extraNodeModules,
+  buffer: require.resolve('buffer'),
+};
 
-module.exports = mergeConfig(getDefaultConfig(__dirname), config);
+module.exports = config;

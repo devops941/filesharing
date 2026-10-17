@@ -34,6 +34,18 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>SecureShare needs local network access to discover nearby devices for file transfer</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_secureshare._tcp</string>
+	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>SecureShare needs camera access to scan QR codes for device pairing</string>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string></string>
 	<key>RCTNewArchEnabled</key>

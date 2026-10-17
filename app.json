@@ -1,4 +1,63 @@
 {
-  "name": "SecureShare",
-  "displayName": "SecureShare"
+  "expo": {
+    "name": "SecureShare",
+    "slug": "secureshare",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "newArchEnabled": true,
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0f172a"
+    },
+    "ios": {
+      "bundleIdentifier": "com.secureshare.app",
+      "supportsTablet": false,
+      "infoPlist": {
+        "NSLocalNetworkUsageDescription": "SecureShare needs local network access to discover nearby devices for file transfer",
+        "NSBonjourServices": ["_secureshare._tcp"],
+        "NSCameraUsageDescription": "SecureShare needs camera access to scan QR codes for device pairing",
+        "UIFileSharingEnabled": true,
+        "LSSupportsOpeningDocumentsInPlace": true
+      }
+    },
+    "android": {
+      "package": "com.secureshare.app",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0f172a"
+      },
+      "permissions": [
+        "android.permission.INTERNET",
+        "android.permission.ACCESS_NETWORK_STATE",
+        "android.permission.ACCESS_WIFI_STATE",
+        "android.permission.CHANGE_WIFI_MULTICAST_STATE",
+        "android.permission.NEARBY_WIFI_DEVICES",
+        "android.permission.CAMERA",
+        "android.permission.WAKE_LOCK",
+        "android.permission.FOREGROUND_SERVICE"
+      ]
+    },
+    "plugins": [
+      "expo-dev-client",
+      "expo-document-picker",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "SecureShare needs camera access to scan QR codes for device pairing"
+        }
+      ],
+      [
+        "expo-file-system",
+        {}
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "your-eas-project-id"
+      }
+    }
+  }
 }

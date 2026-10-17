@@ -2,18 +2,34 @@
   "name": "SecureShare",
   "version": "0.0.1",
   "private": true,
+  "main": "index.js",
   "scripts": {
-    "android": "react-native run-android",
-    "ios": "react-native run-ios",
+    "android": "npx expo run:android",
+    "ios": "npx expo run:ios",
+    "start": "npx expo start",
     "lint": "eslint .",
-    "start": "react-native start",
     "test": "jest"
   },
   "dependencies": {
+    "@react-navigation/native": "^7.5.1",
+    "@react-navigation/native-stack": "^7.21.0",
+    "babel-preset-expo": "^58.0.17",
+    "buffer": "^6.0.3",
+    "expo": "^58.0.14",
+    "expo-camera": "^58.0.10",
+    "expo-dev-client": "^58.0.14",
+    "expo-document-picker": "^58.0.4",
+    "expo-file-system": "^58.0.9",
+    "expo-keep-awake": "^58.0.3",
     "react": "19.3.0",
     "react-native": "0.88.0",
-    "@react-native/new-app-screen": "0.88.0",
-    "react-native-safe-area-context": "^5.5.2"
+    "react-native-libsodium": "^1.7.0",
+    "react-native-qrcode-svg": "^6.3.26",
+    "react-native-safe-area-context": "^5.10.1",
+    "react-native-screens": "^4.30.0",
+    "react-native-svg": "^15.16.0",
+    "react-native-tcp-socket": "^6.4.3",
+    "react-native-zeroconf": "^0.17.6"
   },
   "devDependencies": {
     "@babel/core": "^7.25.2",
@@ -38,5 +54,8 @@
   },
   "engines": {
     "node": ">= 22.11.0"
+  },
+  "allowScripts": {
+    "react-native-libsodium@1.7.0": true
   }
 }

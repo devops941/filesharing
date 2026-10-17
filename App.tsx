@@ -1,45 +1,82 @@
-/**
- * Sample React Native App
- * https://github.com/facebook/react-native
- *
- * @format
- */
+import React from 'react';
+import { NavigationContainer } from '@react-navigation/native';
+import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import HomeScreen from './src/screens/HomeScreen';
+import ReceiveScreen from './src/screens/ReceiveScreen';
+import SendScreen from './src/screens/SendScreen';
+import PairingScreen from './src/screens/PairingScreen';
+import TransferScreen from './src/screens/TransferScreen';
+import DoneScreen from './src/screens/DoneScreen';
+import HelpScreen from './src/screens/HelpScreen';
 
-import { NewAppScreen } from '@react-native/new-app-screen';
-import { StatusBar, StyleSheet, useColorScheme, View } from 'react-native';
-import {
-  SafeAreaProvider,
-  useSafeAreaInsets,
-} from 'react-native-safe-area-context';
+export type RootStackParamList = {
+  Home: undefined;
+  Receive: undefined;
+  Send: undefined;
+  Pairing: {
+    code: string;
+    onConfirm: (ok: boolean) => void;
+  };
+  Transfer: {
+    total: number;
+    received: number;
+  };
+  Done: {
+    filePath: string;
+    verified: boolean;
+  };
+  Help: undefined;
+};
 
-function App() {
-  const isDarkMode = useColorScheme() === 'dark';
+const Stack = createNativeStackNavigator<RootStackParamList>();
 
+export default function App() {
   return (
-    <SafeAreaProvider>
-      <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} />
-      <AppContent />
-    </SafeAreaProvider>
+    <NavigationContainer>
+      <Stack.Navigator
+        initialRouteName="Home"
+        screenOptions={{
+          headerStyle: { backgroundColor: '#0f172a' },
+          headerTintColor: '#f8fafc',
+          headerTitleStyle: { fontWeight: '700' },
+          contentStyle: { backgroundColor: '#0f172a' },
+        }}>
+        <Stack.Screen
+          name="Home"
+          component={HomeScreen}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen
+          name="Receive"
+          component={ReceiveScreen}
+          options={{ title: 'Receive' }}
+        />
+        <Stack.Screen
+          name="Send"
+          component={SendScreen}
+          options={{ title: 'Send' }}
+        />
+        <Stack.Screen
+          name="Pairing"
+          component={PairingScreen}
+          options={{ title: 'Pair Devices', gestureEnabled: false }}
+        />
+        <Stack.Screen
+          name="Transfer"
+          component={TransferScreen}
+          options={{ title: 'Transfer', gestureEnabled: false }}
+        />
+        <Stack.Screen
+          name="Done"
+          component={DoneScreen}
+          options={{ title: 'Done', gestureEnabled: false }}
+        />
+        <Stack.Screen
+          name="Help"
+          component={HelpScreen}
+          options={{ title: 'Help' }}
+        />
+      </Stack.Navigator>
+    </NavigationContainer>
   );
 }
-
-function AppContent() {
-  const safeAreaInsets = useSafeAreaInsets();
-
-  return (
-    <View style={styles.container}>
-      <NewAppScreen
-        templateFileName="App.tsx"
-        safeAreaInsets={safeAreaInsets}
-      />
-    </View>
-  );
-}
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-});
-
-export default App;

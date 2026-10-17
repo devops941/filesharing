@@ -73,3 +73,17 @@ yarn-error.log
 !.yarn/releases
 !.yarn/sdks
 !.yarn/versions
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# EAS
+.easignore
+
+# Environment secrets — never commit tokens
+.env
+.env.local
+.env.*
