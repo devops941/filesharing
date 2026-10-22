@@ -9,7 +9,11 @@ export async function readChunks(
 ): Promise<void> {
   const info = await FileSystem.getInfoAsync(uri);
   if (!info.exists) throw new Error(`File not found: ${uri}`);
-  const fileSize = info.size;
+  const fileSize = info.size ?? 0;
+  if (fileSize === 0) {
+    await onChunk('');
+    return;
+  }
 
   let offset = 0;
   while (offset < fileSize) {

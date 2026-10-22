@@ -12,6 +12,9 @@ export type Device = {
 const zc = new Zeroconf();
 
 export function startAdvertising(deviceName: string) {
+  try {
+    zc.unpublishService(deviceName);
+  } catch {}
   zc.publishService(SERVICE_TYPE, 'tcp', 'local.', deviceName, PORT, {
     platform: Platform.OS,
     v: '1',
@@ -19,27 +22,39 @@ export function startAdvertising(deviceName: string) {
 }
 
 export function stopAdvertising(deviceName: string) {
-  zc.unpublishService(deviceName);
+  try {
+    zc.unpublishService(deviceName);
+  } catch {}
 }
 
 export function startScan(onFound: (d: Device) => void) {
   // Remove old listeners before adding new one to prevent accumulation
   zc.removeAllListeners('resolved');
+  zc.removeAllListeners('error');
+  zc.on('error', () => {
+    // Avoid unhandled error crashes from zeroconf
+  });
   zc.on('resolved', (s: any) => {
-    const ip = s.addresses?.find((a: string) => a.includes('.'));
+    const ip = s.addresses?.find((a: string) => a.includes('.')) ??
+      s.addresses?.find((a: string) => a.includes(':'));
     if (ip) {
       onFound({
         name: s.name,
         ip,
-        port: s.port,
+        port: s.port || PORT,
         platform: s.txt?.platform,
       });
     }
   });
-  zc.scan(SERVICE_TYPE, 'tcp', 'local.');
+  try {
+    zc.scan(SERVICE_TYPE, 'tcp', 'local.');
+  } catch {}
 }
 
 export function stopScan() {
-  zc.stop();
+  try {
+    zc.stop();
+  } catch {}
   zc.removeAllListeners('resolved');
+  zc.removeAllListeners('error');
 }

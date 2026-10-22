@@ -1,13 +1,8 @@
 import * as FileSystem from 'expo-file-system/legacy';
-import { Platform } from 'react-native';
 import { Buffer } from 'buffer';
 
 export function saveDir(): string {
-  if (Platform.OS === 'android') {
-    return (FileSystem.cacheDirectory ?? 'file:///') + 'SecureShare/';
-  }
-  // iOS: documentDirectory is visible in the Files app
-  return (FileSystem.documentDirectory ?? 'file:///') + 'SecureShare/';
+  return (FileSystem.documentDirectory ?? FileSystem.cacheDirectory ?? 'file:///') + 'SecureShare/';
 }
 
 export async function ensureSaveDir(): Promise<void> {

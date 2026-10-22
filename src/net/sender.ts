@@ -42,7 +42,7 @@ function writeAsync(socket: ReturnType<typeof TcpSocket.createConnection>, data:
 function encodeOffer(
   file: PickedFile,
   header: Uint8Array,
-  sharedTx: Uint8Array,
+  _sharedTx?: Uint8Array,
 ): Uint8Array {
   const meta = JSON.stringify({
     fileName: file.name,
@@ -141,7 +141,7 @@ export async function sendFile(
       if (!state.enc) return;
       let i = 0;
       let sent = 0;
-      const total = Math.ceil(file.size / CHUNK_SIZE);
+      const total = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
 
       await readChunks(file.uri, async b64 => {
         const plain = Buffer.from(b64, 'base64');
@@ -180,6 +180,7 @@ export async function sendFiles(
   device: Device,
   files: PickedFile[],
   ui: SenderFilesUI,
+  cancelRef?: { cancel: () => void },
 ): Promise<void> {
   const me = await newSession();
 
@@ -190,13 +191,55 @@ export async function sendFiles(
     let inFlight = 0;
     let waitAck: (() => void) | null = null;
     let waitDone: (() => void) | null = null;
+    let doneReceived = false;
 
+    function abortWaiters() {
+      if (waitAck) {
+        waitAck();
+        waitAck = null;
+      }
+      if (waitDone) {
+        waitDone();
+        waitDone = null;
+      }
+    }
+
+    let destroyed = false;
+    let connectTimeout: ReturnType<typeof setTimeout>;
     const socket = TcpSocket.createConnection(
       { host: device.ip, port: device.port },
       () => {
+        clearTimeout(connectTimeout);
         socket.write(frame(T.HELLO, helloPayload(me)));
       },
     );
+    if (cancelRef) {
+      cancelRef.cancel = () => {
+        if (destroyed) return;
+        destroyed = true;
+        clearTimeout(connectTimeout);
+        abortWaiters();
+        socket.destroy();
+        ui.cancelled();
+        resolveTransfer();
+      };
+    }
+
+    connectTimeout = setTimeout(() => {
+      if (destroyed) return;
+      destroyed = true;
+      abortWaiters();
+      ui.error(
+        `Cannot reach receiver at ${device.ip}\n\n` +
+        `Most likely fix: Use HOTSPOT\n` +
+        `• Phone A (receiver): Settings → Mobile Hotspot → ON\n` +
+        `• Phone B (sender): Connect to that hotspot WiFi\n` +
+        `• Then try again\n\n` +
+        `(Home WiFi routers block phone-to-phone traffic)`,
+      );
+      socket.destroy();
+      rejectTransfer(new Error('Connection timeout'));
+    }, 8000);
 
     const parser = new FrameParser(async (type, p) => {
       try {
@@ -208,6 +251,7 @@ export async function sendFiles(
           const ok = await ui.confirmCode(code);
           if (!ok) {
             socket.write(frame(T.CANCEL));
+            abortWaiters();
             socket.destroy();
             ui.cancelled();
             resolveTransfer();
@@ -218,6 +262,7 @@ export async function sendFiles(
 
         if (type === T.ACCEPT) {
           streamFile(fileIdx).catch((err: any) => {
+            abortWaiters();
             ui.error(err?.message ?? 'Stream error');
             socket.destroy();
             rejectTransfer(err);
@@ -225,6 +270,7 @@ export async function sendFiles(
         }
 
         if (type === T.REJECT) {
+          abortWaiters();
           ui.rejected(fileIdx, p.toString('utf8'));
           socket.write(frame(T.CANCEL));
           socket.destroy();
@@ -233,21 +279,28 @@ export async function sendFiles(
 
         if (type === T.ACK) {
           inFlight = 0;
-          waitAck?.();
-          waitAck = null;
+          if (waitAck) {
+            waitAck();
+            waitAck = null;
+          }
         }
 
         if (type === T.DONE) {
-          waitDone?.();
-          waitDone = null;
+          doneReceived = true;
+          if (waitDone) {
+            waitDone();
+            waitDone = null;
+          }
         }
 
         if (type === T.CANCEL) {
+          abortWaiters();
           ui.cancelled();
           socket.destroy();
           resolveTransfer();
         }
       } catch (err: any) {
+        abortWaiters();
         ui.error(err?.message ?? 'Unknown error');
         socket.destroy();
         rejectTransfer(err);
@@ -256,12 +309,25 @@ export async function sendFiles(
 
     socket.on('data', d => parser.push(d as Buffer));
     socket.on('error', err => {
-      ui.error(err.message);
+      if (destroyed) return;
+      destroyed = true;
+      clearTimeout(connectTimeout);
+      abortWaiters();
+      ui.error(`Connection error: ${err.message}`);
       rejectTransfer(err);
+    });
+    socket.on('close', () => {
+      if (destroyed) return;
+      destroyed = true;
+      clearTimeout(connectTimeout);
+      abortWaiters();
+      ui.error('Connection closed by receiver');
+      resolveTransfer();
     });
 
     function offerFile(idx: number) {
       if (!savedKeys) return;
+      doneReceived = false;
       enc = encryptor(savedKeys.sharedTx);
       socket.write(frame(T.OFFER, encodeOffer(files[idx], enc.header, savedKeys.sharedTx)));
     }
@@ -271,7 +337,7 @@ export async function sendFiles(
       const file = files[idx];
       let i = 0;
       let sent = 0;
-      const total = Math.ceil(file.size / CHUNK_SIZE);
+      const total = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
       inFlight = 0;
 
       await readChunks(file.uri, async b64 => {
@@ -287,11 +353,26 @@ export async function sendFiles(
         ui.progress(idx, sent, file.size);
 
         if (++inFlight >= ACK_EVERY * 2) {
-          await new Promise<void>(r => { waitAck = r; });
+          await new Promise<void>(r => {
+            if (inFlight < ACK_EVERY * 2) {
+              r();
+            } else {
+              waitAck = r;
+            }
+          });
         }
       });
 
-      await new Promise<void>(r => { waitDone = r; });
+      if (!doneReceived) {
+        await new Promise<void>(r => {
+          if (doneReceived) {
+            r();
+          } else {
+            waitDone = r;
+          }
+        });
+      }
+      doneReceived = false;
 
       fileIdx++;
       if (fileIdx < files.length) {

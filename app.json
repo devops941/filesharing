@@ -26,6 +26,7 @@
     },
     "android": {
       "package": "com.secureshare.app",
+      "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0f172a"
@@ -39,7 +40,6 @@
         "android.permission.CAMERA",
         "android.permission.WAKE_LOCK",
         "android.permission.FOREGROUND_SERVICE",
-        "android.permission.RECORD_AUDIO",
         "android.permission.READ_EXTERNAL_STORAGE",
         "android.permission.WRITE_EXTERNAL_STORAGE"
       ]
@@ -56,6 +56,12 @@
       [
         "expo-file-system",
         {}
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#4ADE80"
+        }
       ]
     ],
     "updates": {

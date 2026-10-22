@@ -54,7 +54,32 @@ export function startReceiver(ui: ReceiverUI): ReturnType<typeof TcpSocket.creat
     function finalize() {
       if (doneCalled) return;
       doneCalled = true;
+      if (outPath) {
+        FileSystem.deleteAsync(outPath, { idempotent: true }).catch(() => {});
+        ui.error('Transfer interrupted: connection closed before file completed');
+        return;
+      }
       if (lastOutPath) ui.done(lastOutPath, true);
+    }
+
+    let pairingConfirmed = false;
+    let pendingOffer: Buffer | null = null;
+
+    async function processOffer(p: Buffer) {
+      if (!keys) return;
+      const offer = decodeOffer(p);
+      if (!(await hasSpace(offer.size))) {
+        socket.write(frame(T.REJECT, enc('no_space')));
+        return;
+      }
+      if (!(await ui.acceptFile(offer))) {
+        socket.write(frame(T.REJECT, enc('declined')));
+        return;
+      }
+      decrypt = decryptor(keys.sharedRx, offer.header);
+      await ensureSaveDir();
+      outPath = await uniquePath(saveDir(), offer.fileName);
+      socket.write(frame(T.ACCEPT));
     }
 
     const parser = new FrameParser(async (type, p) => {
@@ -70,25 +95,24 @@ export function startReceiver(ui: ReceiverUI): ReturnType<typeof TcpSocket.creat
             if (!ok) {
               socket.write(frame(T.CANCEL));
               socket.destroy();
+            } else {
+              pairingConfirmed = true;
+              // Process any OFFER that arrived during pairing
+              if (pendingOffer) {
+                const buf = pendingOffer;
+                pendingOffer = null;
+                await processOffer(buf);
+              }
             }
             break;
           }
 
           case T.OFFER: {
-            if (!keys) return;
-            const offer = decodeOffer(p);
-            if (!(await hasSpace(offer.size))) {
-              socket.write(frame(T.REJECT, enc('no_space')));
+            if (!pairingConfirmed) {
+              pendingOffer = p;
               return;
             }
-            if (!(await ui.acceptFile(offer))) {
-              socket.write(frame(T.REJECT, enc('declined')));
-              return;
-            }
-            decrypt = decryptor(keys.sharedRx, offer.header);
-            await ensureSaveDir();
-            outPath = await uniquePath(saveDir(), offer.fileName);
-            socket.write(frame(T.ACCEPT));
+            await processOffer(p);
             break;
           }
 
@@ -145,8 +169,13 @@ export function startReceiver(ui: ReceiverUI): ReturnType<typeof TcpSocket.creat
     });
 
     socket.on('data', d => parser.push(d as Buffer));
-    socket.on('error', err => ui.error(err.message));
-    socket.on('close', () => finalize());
+    socket.on('error', err => {
+      if (outPath) {
+        FileSystem.deleteAsync(outPath, { idempotent: true }).catch(() => {});
+      }
+      ui.error(err.message);
+    });
+    socket.on('close', () => { parser.reset(); finalize(); });
   });
 
   server.listen({ port: PORT, host: '0.0.0.0' });

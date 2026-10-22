@@ -1,16 +1,16 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
+  Animated,
   View,
   Text,
   TouchableOpacity,
-  FlatList,
   StyleSheet,
   SafeAreaView,
   Alert,
   ActivityIndicator,
-  TextInput,
   Modal,
   ScrollView,
+  StatusBar,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -20,6 +20,27 @@ import { startScan, stopScan } from '../net/discovery';
 import type { Device } from '../net/discovery';
 import { sendFiles } from '../net/sender';
 import type { PickedFile } from '../net/sender';
+import {
+  notifySending,
+  notifyDone,
+  notifyCancelled,
+  resetNotifProgress,
+} from '../notifications';
+import { registerTransferCancel } from '../net/activeTransfer';
+
+const C = {
+  bg: '#0F1117',
+  surface: '#1A1C24',
+  surface2: '#22242E',
+  primary: '#4ADE80',
+  primaryBg: '#052E16',
+  accent: '#818CF8',
+  text: '#E2E4EE',
+  textSub: '#888BA0',
+  textDim: '#4E5068',
+  border: '#252830',
+  red: '#F87171',
+};
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Send'>;
 
@@ -27,10 +48,53 @@ export default function SendScreen({ navigation }: Props) {
   const [files, setFiles] = useState<PickedFile[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [scanning, setScanning] = useState(false);
-  const [manualIp, setManualIp] = useState('');
   const [showQrScanner, setShowQrScanner] = useState(false);
   const [qrScanned, setQrScanned] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const cancelConnectionRef = useRef<(() => void) | null>(null);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
+  const scanLineAnim = useRef(new Animated.Value(0)).current;
+
+  const ring1 = useRef(new Animated.Value(0)).current;
+  const ring2 = useRef(new Animated.Value(0)).current;
+  const ring3 = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (showQrScanner) {
+      Animated.loop(
+        Animated.sequence([
+          Animated.timing(scanLineAnim, { toValue: 1, duration: 1600, useNativeDriver: true }),
+          Animated.timing(scanLineAnim, { toValue: 0, duration: 1600, useNativeDriver: true }),
+        ]),
+      ).start();
+    } else {
+      scanLineAnim.setValue(0);
+    }
+  }, [showQrScanner, scanLineAnim]);
+
+  useEffect(() => {
+    const createRingAnim = (val: Animated.Value, delay: number) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(delay),
+          Animated.parallel([
+            Animated.timing(val, { toValue: 1, duration: 2400, useNativeDriver: true }),
+          ]),
+          Animated.timing(val, { toValue: 0, duration: 0, useNativeDriver: true }),
+        ]),
+      );
+    const a1 = createRingAnim(ring1, 0);
+    const a2 = createRingAnim(ring2, 800);
+    const a3 = createRingAnim(ring3, 1600);
+    a1.start();
+    a2.start();
+    a3.start();
+    return () => {
+      a1.stop();
+      a2.stop();
+      a3.stop();
+    };
+  }, [ring1, ring2, ring3]);
 
   useEffect(() => {
     setScanning(true);
@@ -101,134 +165,177 @@ export default function SendScreen({ navigation }: Props) {
       Alert.alert('Pick files first');
       return;
     }
-    navigation.navigate('Transfer', {
-      total: files[0].size,
+    const transferParams = {
+      total: totalSize,
       received: 0,
       fileName: files[0].name,
       fileIndex: 1,
       fileTotal: files.length,
-    });
+    };
+    resetNotifProgress();
+    setConnecting(true);
+    const cancelRef = { cancel: () => {} };
+    cancelConnectionRef.current = () => cancelRef.cancel();
+    registerTransferCancel(() => cancelRef.cancel());
     await sendFiles(device, files, {
       confirmCode: code =>
         new Promise(resolve => {
+          setConnecting(false);
           navigation.navigate('Pairing', {
             code,
-            onConfirm: (ok: boolean) => resolve(ok),
+            onConfirm: resolve,
+            transferParams,
           });
         }),
       progress: (idx, sent, fileTotal) => {
-        navigation.setParams({
-          received: sent,
+        navigation.navigate('Transfer', {
           total: fileTotal,
+          received: sent,
           fileIndex: idx + 1,
           fileName: files[idx]?.name ?? '',
-        } as any);
+          fileTotal: files.length,
+        });
+        const pct = fileTotal > 0 ? Math.min(99, Math.round((sent / fileTotal) * 100)) : 0;
+        notifySending(files[idx]?.name ?? 'File', pct).catch(() => {});
       },
-      done: () =>
-        navigation.navigate('Done', {
-          filePath: '',
-          verified: true,
-          fileCount: files.length,
-        }),
-      rejected: (_idx, reason) => Alert.alert('Rejected', reason),
-      error: msg => Alert.alert('Error', msg),
-      cancelled: () => navigation.goBack(),
-    });
-  }
-
-  async function connectManual() {
-    const ip = manualIp.trim();
-    if (!ip) return;
-    const device: Device = { name: 'Manual', ip, port: 47800 };
-    await connectToDevice(device);
+      done: () => {
+        registerTransferCancel(null);
+        navigation.navigate('Done', { filePath: '', verified: true, fileCount: files.length });
+        notifyDone('sent', files.map(f => f.name)).catch(() => {});
+      },
+      rejected: (_idx, reason) => {
+        registerTransferCancel(null);
+        Alert.alert('Rejected', reason);
+      },
+      error: msg => {
+        registerTransferCancel(null);
+        setConnecting(false);
+        notifyCancelled().catch(() => {});
+        Alert.alert('Connection Failed', msg, [{ text: 'OK' }]);
+      },
+      cancelled: () => {
+        registerTransferCancel(null);
+        setConnecting(false);
+        cancelConnectionRef.current = null;
+        notifyCancelled().catch(() => {});
+      },
+    }, cancelRef);
+    registerTransferCancel(null);
+    setConnecting(false);
+    cancelConnectionRef.current = null;
   }
 
   const totalSize = files.reduce((s, f) => s + f.size, 0);
 
   return (
     <SafeAreaView style={styles.container}>
-      <ScrollView showsVerticalScrollIndicator={false}>
-        <Text style={styles.title}>Send Files</Text>
+      <StatusBar barStyle="light-content" />
 
-        <TouchableOpacity style={styles.btn} onPress={pickFiles}>
-          <Text style={styles.btnText}>
-            {files.length > 0
-              ? `${files.length} file${files.length > 1 ? 's' : ''} selected`
-              : 'Pick Files'}
-          </Text>
-        </TouchableOpacity>
+      {/* Header */}
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>Share</Text>
+      </View>
 
-        {files.length > 0 && (
-          <View style={styles.fileList}>
-            <Text style={styles.fileSummary}>
-              {(totalSize / 1024 / 1024).toFixed(2)} MB total
-            </Text>
-            {files.map((f, i) => (
-              <View key={i} style={styles.fileRow}>
-                <Text style={styles.fileRowName} numberOfLines={1}>
-                  📄 {f.name}
-                </Text>
-                <Text style={styles.fileRowSize}>
-                  {(f.size / 1024 / 1024).toFixed(1)} MB
-                </Text>
-              </View>
+      {/* File picker card */}
+      <TouchableOpacity onPress={pickFiles} style={styles.fileCard} activeOpacity={0.8}>
+        {files.length === 0 ? (
+          <View style={styles.fileCardEmpty}>
+            <Text style={styles.fileCardIcon}>📁</Text>
+            <Text style={styles.fileCardTitle}>Add files to share</Text>
+            <Text style={styles.fileCardSub}>Tap to pick files</Text>
+          </View>
+        ) : (
+          <View style={styles.fileCardFilled}>
+            <View style={styles.fileCardFilledRow}>
+              <Text style={styles.fileCardTitle}>
+                {files.length} file{files.length > 1 ? 's' : ''} ready
+              </Text>
+              <Text style={styles.fileCardSub}>
+                {(totalSize / 1024 / 1024).toFixed(1)} MB · Tap to change
+              </Text>
+            </View>
+            {files.slice(0, 3).map((f, i) => (
+              <Text key={i} style={styles.fileRow} numberOfLines={1}>
+                📄 {f.name}
+              </Text>
             ))}
+            {files.length > 3 && (
+              <Text style={styles.fileMore}>+{files.length - 3} more</Text>
+            )}
           </View>
         )}
+      </TouchableOpacity>
 
-        <Text style={styles.sectionTitle}>Nearby Devices</Text>
-        {scanning && devices.length === 0 && (
-          <ActivityIndicator color="#6366f1" style={{ marginVertical: 8 }} />
-        )}
-        <FlatList
-          data={devices}
-          keyExtractor={d => d.ip}
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={styles.deviceRow}
-              onPress={() => connectToDevice(item)}>
-              <Text style={styles.deviceName}>
-                {item.platform === 'android' ? '🤖' : '🍎'} {item.name}
-              </Text>
-              <Text style={styles.deviceIp}>{item.ip}</Text>
-            </TouchableOpacity>
+      {/* Nearby Devices section */}
+      <View style={styles.section}>
+        <Text style={styles.sectionLabel}>NEARBY DEVICES</Text>
+
+        <View style={styles.radarArea}>
+          {/* Radar pulse rings */}
+          <View style={styles.radar}>
+            {[ring1, ring2, ring3].map((anim, i) => (
+              <Animated.View
+                key={i}
+                style={[
+                  styles.radarRing,
+                  {
+                    opacity: anim.interpolate({
+                      inputRange: [0, 0.3, 1],
+                      outputRange: [0, 0.5, 0],
+                    }),
+                    transform: [
+                      {
+                        scale: anim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [0.3, 1],
+                        }),
+                      },
+                    ],
+                  },
+                ]}
+              />
+            ))}
+            <View style={styles.radarCenter} />
+          </View>
+
+          {/* Scanning status text */}
+          {scanning && devices.length === 0 && (
+            <Text style={styles.scanningText}>Looking for nearby devices...</Text>
           )}
-          ListEmptyComponent={
-            <Text style={styles.empty}>
-              Scanning… open Receive on the other phone
-            </Text>
-          }
-          style={styles.list}
-          scrollEnabled={false}
-        />
 
-        <Text style={styles.sectionTitle}>Scan QR Code</Text>
-        <TouchableOpacity
-          style={[styles.btn, styles.btnSecondary]}
-          onPress={openQrScanner}>
-          <Text style={styles.btnText}>📷  Scan Receiver QR Code</Text>
-        </TouchableOpacity>
-
-        <Text style={styles.sectionTitle}>Enter IP Manually</Text>
-        <Text style={styles.ipHint}>
-          Look at the receiver's screen for their IP address
-        </Text>
-        <View style={styles.row}>
-          <TextInput
-            style={styles.input}
-            placeholder="192.168.x.x"
-            placeholderTextColor="#475569"
-            value={manualIp}
-            onChangeText={setManualIp}
-            keyboardType="numeric"
-          />
-          <TouchableOpacity style={styles.goBtn} onPress={connectManual}>
-            <Text style={styles.goBtnText}>Go</Text>
-          </TouchableOpacity>
+          {/* Device cards — horizontal scroll */}
+          {devices.length > 0 && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.deviceScroll}
+              contentContainerStyle={styles.deviceScrollContent}>
+              {devices.map(item => (
+                <TouchableOpacity
+                  key={item.ip}
+                  onPress={() => connectToDevice(item)}
+                  style={styles.deviceCard}
+                  activeOpacity={0.75}>
+                  <View style={styles.deviceIconWrap}>
+                    <Text style={styles.deviceIcon}>📱</Text>
+                  </View>
+                  <Text style={styles.deviceName} numberOfLines={1}>
+                    {item.name}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          )}
         </View>
-      </ScrollView>
+      </View>
 
-      <Modal visible={showQrScanner} animationType="slide">
+      {/* QR Scan button */}
+      <TouchableOpacity style={styles.qrBtn} onPress={openQrScanner} activeOpacity={0.8}>
+        <Text style={styles.qrBtnText}>📷  Scan QR Code</Text>
+      </TouchableOpacity>
+
+      {/* QR Scanner Modal */}
+      <Modal visible={showQrScanner} animationType="slide" statusBarTranslucent>
         <View style={styles.scannerContainer}>
           <CameraView
             style={StyleSheet.absoluteFill}
@@ -236,14 +343,74 @@ export default function SendScreen({ navigation }: Props) {
             barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
             onBarcodeScanned={handleQrScanned}
           />
-          <View style={styles.scannerOverlay}>
-            <Text style={styles.scannerLabel}>
-              Point at the QR code on the receiver
+          {/* Top overlay */}
+          <View style={styles.scannerTopOverlay}>
+            <Text style={styles.scannerTitle}>Scan QR Code</Text>
+            <Text style={styles.scannerSubtitle}>
+              Hold your device over the QR code on the receiver's screen
+            </Text>
+          </View>
+          {/* Middle row: side overlays + viewfinder cutout */}
+          <View style={styles.scannerMiddleRow}>
+            <View style={styles.scannerSideOverlay} />
+            <View style={styles.viewfinder}>
+              <View style={[styles.corner, styles.cornerTL]} />
+              <View style={[styles.corner, styles.cornerTR]} />
+              <View style={[styles.corner, styles.cornerBL]} />
+              <View style={[styles.corner, styles.cornerBR]} />
+              <Animated.View
+                style={[
+                  styles.scanLine,
+                  {
+                    transform: [
+                      {
+                        translateY: scanLineAnim.interpolate({
+                          inputRange: [0, 1],
+                          outputRange: [0, 248],
+                        }),
+                      },
+                    ],
+                  },
+                ]}
+              />
+            </View>
+            <View style={styles.scannerSideOverlay} />
+          </View>
+          {/* Bottom overlay */}
+          <View style={styles.scannerBottomOverlay}>
+            {qrScanned ? (
+              <View style={styles.scanningRow}>
+                <ActivityIndicator color={C.primary} size="small" />
+                <Text style={styles.scanningRowText}>SCANNING...</Text>
+              </View>
+            ) : (
+              <TouchableOpacity
+                style={styles.cancelScanBtn}
+                onPress={() => setShowQrScanner(false)}>
+                <Text style={styles.cancelScanText}>Cancel</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Connecting overlay */}
+      <Modal visible={connecting} transparent animationType="fade">
+        <View style={styles.connectingOverlay}>
+          <View style={styles.connectingBox}>
+            <ActivityIndicator color={C.primary} size="large" />
+            <Text style={styles.connectingTitle}>Connecting</Text>
+            <Text style={styles.connectingHint}>
+              Make sure the receiver's phone has Receive Mode open
             </Text>
             <TouchableOpacity
-              style={styles.cancelScanBtn}
-              onPress={() => setShowQrScanner(false)}>
-              <Text style={styles.cancelScanText}>Cancel</Text>
+              style={styles.connectingCancel}
+              onPress={() => {
+                cancelConnectionRef.current?.();
+                cancelConnectionRef.current = null;
+                setConnecting(false);
+              }}>
+              <Text style={styles.connectingCancelText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -253,30 +420,331 @@ export default function SendScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#0f172a', padding: 24 },
-  title: { fontSize: 24, fontWeight: '700', color: '#f8fafc', marginBottom: 16 },
-  btn: { backgroundColor: '#6366f1', borderRadius: 12, padding: 16, alignItems: 'center', marginBottom: 4 },
-  btnSecondary: { backgroundColor: '#1e293b', borderWidth: 1, borderColor: '#4f46e5', marginTop: 4 },
-  btnText: { color: '#f8fafc', fontWeight: '600', fontSize: 15 },
-  fileList: { marginBottom: 8, marginTop: 8 },
-  fileSummary: { color: '#64748b', fontSize: 12, textAlign: 'right', marginBottom: 6 },
-  fileRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#1e293b', borderRadius: 8, padding: 10, marginBottom: 4 },
-  fileRowName: { color: '#f8fafc', fontSize: 13, flex: 1, marginRight: 8 },
-  fileRowSize: { color: '#64748b', fontSize: 12 },
-  sectionTitle: { color: '#64748b', fontSize: 11, fontWeight: '700', marginTop: 18, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 },
-  list: { maxHeight: 200 },
-  deviceRow: { backgroundColor: '#1e293b', borderRadius: 10, padding: 14, marginBottom: 8 },
-  deviceName: { color: '#f8fafc', fontSize: 15, fontWeight: '600' },
-  deviceIp: { color: '#64748b', fontSize: 12, marginTop: 2 },
-  empty: { color: '#475569', fontSize: 13, fontStyle: 'italic', textAlign: 'center', marginVertical: 8 },
-  ipHint: { color: '#475569', fontSize: 12, marginBottom: 8, fontStyle: 'italic' },
-  row: { flexDirection: 'row', gap: 8, marginTop: 4, marginBottom: 24 },
-  input: { flex: 1, backgroundColor: '#1e293b', color: '#f8fafc', borderRadius: 10, padding: 12, fontSize: 14 },
-  goBtn: { backgroundColor: '#6366f1', borderRadius: 10, paddingHorizontal: 20, justifyContent: 'center' },
-  goBtnText: { color: '#f8fafc', fontWeight: '700' },
-  scannerContainer: { flex: 1, backgroundColor: '#000' },
-  scannerOverlay: { position: 'absolute', bottom: 60, left: 0, right: 0, alignItems: 'center', gap: 16 },
-  scannerLabel: { color: '#f8fafc', fontSize: 14, backgroundColor: 'rgba(0,0,0,0.6)', paddingHorizontal: 20, paddingVertical: 8, borderRadius: 20 },
-  cancelScanBtn: { backgroundColor: '#ef4444', borderRadius: 12, paddingHorizontal: 32, paddingVertical: 14 },
-  cancelScanText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  // Layout
+  container: {
+    flex: 1,
+    backgroundColor: C.bg,
+  },
+
+  // Header
+  header: {
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 8,
+  },
+  headerTitle: {
+    fontSize: 28,
+    fontWeight: '700',
+    color: C.text,
+    letterSpacing: -0.5,
+  },
+
+  // File card
+  fileCard: {
+    margin: 16,
+    backgroundColor: C.surface,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: C.border,
+    overflow: 'hidden',
+  },
+  fileCardEmpty: {
+    padding: 28,
+    alignItems: 'center',
+    gap: 6,
+  },
+  fileCardIcon: {
+    fontSize: 36,
+    marginBottom: 4,
+  },
+  fileCardTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: C.text,
+  },
+  fileCardSub: {
+    fontSize: 13,
+    color: C.textSub,
+  },
+  fileCardFilled: {
+    padding: 18,
+    gap: 6,
+  },
+  fileCardFilledRow: {
+    marginBottom: 8,
+  },
+  fileRow: {
+    fontSize: 13,
+    color: C.textSub,
+    paddingVertical: 2,
+  },
+  fileMore: {
+    fontSize: 12,
+    color: C.textDim,
+    marginTop: 2,
+  },
+
+  // Nearby Devices section
+  section: {
+    flex: 1,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
+  sectionLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: C.textDim,
+    letterSpacing: 1.2,
+    textTransform: 'uppercase',
+    marginBottom: 12,
+  },
+  radarArea: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+  },
+
+  // Radar
+  radar: {
+    width: 120,
+    height: 120,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginVertical: 8,
+  },
+  radarRing: {
+    position: 'absolute',
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    borderWidth: 2,
+    borderColor: C.primary,
+  },
+  radarCenter: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: C.primary,
+  },
+  scanningText: {
+    fontSize: 13,
+    color: C.textSub,
+    fontStyle: 'italic',
+    textAlign: 'center',
+  },
+
+  // Device scroll
+  deviceScroll: {
+    flexGrow: 0,
+  },
+  deviceScrollContent: {
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+  },
+  deviceCard: {
+    alignItems: 'center',
+    backgroundColor: C.surface2,
+    borderRadius: 20,
+    padding: 16,
+    marginRight: 12,
+    minWidth: 100,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  deviceIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: C.primaryBg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
+  },
+  deviceIcon: {
+    fontSize: 22,
+  },
+  deviceName: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: C.text,
+    textAlign: 'center',
+  },
+
+  // QR button
+  qrBtn: {
+    margin: 16,
+    marginTop: 8,
+    backgroundColor: C.surface,
+    borderRadius: 16,
+    padding: 16,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: C.border,
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  qrBtnText: {
+    color: C.text,
+    fontWeight: '600',
+    fontSize: 15,
+  },
+
+  // QR Scanner Modal
+  scannerContainer: {
+    flex: 1,
+    backgroundColor: '#000',
+  },
+  scannerTopOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    paddingBottom: 24,
+  },
+  scannerTitle: {
+    color: C.text,
+    fontSize: 22,
+    fontWeight: '700',
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  scannerSubtitle: {
+    color: C.textSub,
+    fontSize: 13,
+    textAlign: 'center',
+    paddingHorizontal: 32,
+  },
+  scannerMiddleRow: {
+    flexDirection: 'row',
+    height: 260,
+  },
+  scannerSideOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+  },
+  viewfinder: {
+    width: 260,
+    height: 260,
+    position: 'relative',
+  },
+  corner: {
+    position: 'absolute',
+    width: 28,
+    height: 28,
+    borderColor: C.primary,
+    borderWidth: 4,
+  },
+  cornerTL: {
+    top: 0,
+    left: 0,
+    borderRightWidth: 0,
+    borderBottomWidth: 0,
+    borderTopLeftRadius: 6,
+  },
+  cornerTR: {
+    top: 0,
+    right: 0,
+    borderLeftWidth: 0,
+    borderBottomWidth: 0,
+    borderTopRightRadius: 6,
+  },
+  cornerBL: {
+    bottom: 0,
+    left: 0,
+    borderRightWidth: 0,
+    borderTopWidth: 0,
+    borderBottomLeftRadius: 6,
+  },
+  cornerBR: {
+    bottom: 0,
+    right: 0,
+    borderLeftWidth: 0,
+    borderTopWidth: 0,
+    borderBottomRightRadius: 6,
+  },
+  scanLine: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 2,
+    backgroundColor: C.primary,
+    shadowColor: C.primary,
+    shadowOpacity: 0.9,
+    shadowRadius: 6,
+    elevation: 4,
+  },
+  scannerBottomOverlay: {
+    flex: 1.2,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 24,
+  },
+  scanningRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  scanningRowText: {
+    color: C.text,
+    fontSize: 14,
+    fontWeight: '600',
+    letterSpacing: 2,
+  },
+  cancelScanBtn: {
+    backgroundColor: C.surface,
+    borderRadius: 100,
+    paddingHorizontal: 36,
+    paddingVertical: 14,
+  },
+  cancelScanText: {
+    color: C.text,
+    fontWeight: '700',
+    fontSize: 15,
+  },
+
+  // Connecting Modal
+  connectingOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  connectingBox: {
+    backgroundColor: C.surface,
+    borderRadius: 28,
+    padding: 32,
+    width: '85%',
+    alignItems: 'center',
+    gap: 14,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  connectingTitle: {
+    color: C.text,
+    fontSize: 22,
+    fontWeight: '700',
+  },
+  connectingHint: {
+    color: C.textSub,
+    fontSize: 13,
+    textAlign: 'center',
+  },
+  connectingCancel: {
+    marginTop: 8,
+    borderWidth: 1,
+    borderColor: C.red,
+    borderRadius: 100,
+    paddingHorizontal: 32,
+    paddingVertical: 12,
+  },
+  connectingCancelText: {
+    color: C.red,
+    fontWeight: '600',
+    fontSize: 15,
+  },
 });

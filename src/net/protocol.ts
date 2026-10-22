@@ -44,6 +44,10 @@ export class FrameParser {
       this.buf = Buffer.from(this.buf.subarray(4 + len));
     }
   }
+
+  reset(): void {
+    this.buf = Buffer.alloc(0);
+  }
 }
 
 // Encode a 32-bit index as 4-byte big-endian

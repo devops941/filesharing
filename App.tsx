@@ -16,6 +16,13 @@ export type RootStackParamList = {
   Pairing: {
     code: string;
     onConfirm: (ok: boolean) => void;
+    transferParams?: {
+      total: number;
+      received: number;
+      fileName?: string;
+      fileIndex?: number;
+      fileTotal?: number;
+    };
   };
   Transfer: {
     total: number;

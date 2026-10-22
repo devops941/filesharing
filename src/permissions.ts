@@ -1,16 +1,25 @@
 import { PermissionsAndroid, Platform } from 'react-native';
 
-export async function requestPermissions(): Promise<boolean> {
-  if (Platform.OS !== 'android') return true; // iOS handles prompts automatically
+export async function requestPermissions(forAction: 'send' | 'receive' = 'send'): Promise<boolean> {
+  if (Platform.OS !== 'android') return true;
 
-  const perms: string[] = [PermissionsAndroid.PERMISSIONS.CAMERA];
+  const perms: string[] = [];
+  if (forAction === 'send') {
+    perms.push(PermissionsAndroid.PERMISSIONS.CAMERA);
+  }
 
   if (Platform.Version >= 33) {
     perms.push(PermissionsAndroid.PERMISSIONS.NEARBY_WIFI_DEVICES);
+    perms.push('android.permission.POST_NOTIFICATIONS' as any);
   }
 
-  const res = await PermissionsAndroid.requestMultiple(
-    perms as Parameters<typeof PermissionsAndroid.requestMultiple>[0],
-  );
-  return Object.values(res).every(r => r === 'granted');
+  if (perms.length === 0) return true;
+
+  try {
+    await PermissionsAndroid.requestMultiple(
+      perms as Parameters<typeof PermissionsAndroid.requestMultiple>[0],
+    );
+  } catch {}
+
+  return true;
 }

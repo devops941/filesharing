@@ -5,115 +5,216 @@ import {
   TouchableOpacity,
   StyleSheet,
   SafeAreaView,
-  TextInput,
-  Modal,
+  StatusBar,
 } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../App';
 import { requestPermissions } from '../permissions';
-import { getDeviceName, saveDeviceName } from '../utils/deviceName';
+import { getDeviceName } from '../utils/deviceName';
+import { setupNotifications } from '../notifications';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Home'>;
 
+const C = {
+  bg: '#0F1117',
+  surface: '#1A1C24',
+  surface2: '#22242E',
+  primary: '#4ADE80',
+  primaryBg: '#052E16',
+  accent: '#818CF8',
+  text: '#E2E4EE',
+  textSub: '#888BA0',
+  textDim: '#4E5068',
+  border: '#252830',
+  red: '#F87171',
+};
+
 export default function HomeScreen({ navigation }: Props) {
   const [deviceName, setDeviceName] = useState('');
-  const [showRename, setShowRename] = useState(false);
-  const [newName, setNewName] = useState('');
 
   useEffect(() => {
     getDeviceName().then(setDeviceName);
+    setupNotifications();
   }, []);
 
   async function goSend() {
-    const ok = await requestPermissions();
-    if (ok) navigation.navigate('Send');
+    await requestPermissions('send');
+    navigation.navigate('Send');
   }
 
   async function goReceive() {
-    const ok = await requestPermissions();
-    if (ok) navigation.navigate('Receive');
-  }
-
-  async function handleRename() {
-    const trimmed = newName.trim();
-    if (!trimmed) return;
-    await saveDeviceName(trimmed);
-    setDeviceName(trimmed);
-    setShowRename(false);
+    await requestPermissions('receive');
+    navigation.navigate('Receive');
   }
 
   return (
     <SafeAreaView style={styles.container}>
-      <Text style={styles.title}>SecureShare</Text>
-      <Text style={styles.sub}>Encrypted local file transfer</Text>
+      <StatusBar barStyle="light-content" />
 
-      <TouchableOpacity
-        style={styles.nameTag}
-        onPress={() => { setNewName(deviceName); setShowRename(true); }}>
-        <Text style={styles.nameTagLabel}>YOUR DEVICE NAME</Text>
-        <Text style={styles.nameTagValue}>{deviceName || '...'}</Text>
-        <Text style={styles.nameTagEdit}>Tap to change ✏️</Text>
-      </TouchableOpacity>
+      {/* Top section: icon badge + title + subtitle */}
+      <View style={styles.topSection}>
+        <View style={styles.iconBadge}>
+          <Text style={styles.iconEmoji}>🔒</Text>
+        </View>
+        <Text style={styles.title}>SecureShare</Text>
+        <Text style={styles.subtitle}>
+          {deviceName ? `${deviceName} · End-to-end encrypted` : 'End-to-end encrypted'}
+        </Text>
+      </View>
 
-      <TouchableOpacity style={styles.btn} onPress={goSend}>
-        <Text style={styles.btnText}>Send Files</Text>
-      </TouchableOpacity>
-      <TouchableOpacity style={[styles.btn, styles.btnSecondary]} onPress={goReceive}>
-        <Text style={styles.btnText}>Receive Files</Text>
-      </TouchableOpacity>
-      <TouchableOpacity onPress={() => navigation.navigate('Help')}>
+      {/* Middle section: Send + Receive cards */}
+      <View style={styles.cardsSection}>
+        <TouchableOpacity style={styles.sendCard} onPress={goSend} activeOpacity={0.85}>
+          <View style={styles.sendIconCircle}>
+            <Text style={styles.sendIconText}>↑</Text>
+          </View>
+          <View style={styles.cardTextBlock}>
+            <Text style={styles.sendCardTitle}>Send</Text>
+            <Text style={styles.sendCardSub}>Share files to a nearby device</Text>
+          </View>
+        </TouchableOpacity>
+
+        <TouchableOpacity style={styles.receiveCard} onPress={goReceive} activeOpacity={0.85}>
+          <View style={styles.receiveIconCircle}>
+            <Text style={styles.receiveIconText}>↓</Text>
+          </View>
+          <View style={styles.cardTextBlock}>
+            <Text style={styles.receiveCardTitle}>Receive</Text>
+            <Text style={styles.receiveCardSub}>Accept files from a nearby device</Text>
+          </View>
+        </TouchableOpacity>
+      </View>
+
+      {/* Bottom: help link */}
+      <TouchableOpacity onPress={() => navigation.navigate('Help')} style={styles.helpContainer}>
         <Text style={styles.help}>Help</Text>
       </TouchableOpacity>
-
-      <Modal visible={showRename} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>Set Your Device Name</Text>
-            <Text style={styles.modalSub}>This name shows to nearby devices</Text>
-            <TextInput
-              style={styles.modalInput}
-              value={newName}
-              onChangeText={setNewName}
-              placeholder="e.g. John's Phone"
-              placeholderTextColor="#475569"
-              autoFocus
-              maxLength={24}
-            />
-            <View style={styles.modalBtns}>
-              <TouchableOpacity style={styles.modalCancel} onPress={() => setShowRename(false)}>
-                <Text style={styles.modalCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.modalSave} onPress={handleRename}>
-                <Text style={styles.modalSaveText}>Save</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#0f172a', padding: 24 },
-  title: { fontSize: 32, fontWeight: '800', color: '#f8fafc', marginBottom: 8 },
-  sub: { fontSize: 14, color: '#94a3b8', marginBottom: 24 },
-  nameTag: { backgroundColor: '#1e293b', borderRadius: 14, paddingVertical: 12, paddingHorizontal: 24, alignItems: 'center', marginBottom: 32, borderWidth: 1, borderColor: '#334155', width: '100%' },
-  nameTagLabel: { color: '#64748b', fontSize: 10, fontWeight: '700', letterSpacing: 1, textTransform: 'uppercase', marginBottom: 4 },
-  nameTagValue: { color: '#818cf8', fontSize: 20, fontWeight: '700', marginBottom: 2 },
-  nameTagEdit: { color: '#475569', fontSize: 11 },
-  btn: { width: '100%', backgroundColor: '#6366f1', borderRadius: 14, padding: 18, alignItems: 'center', marginBottom: 16 },
-  btnSecondary: { backgroundColor: '#1e293b', borderWidth: 1, borderColor: '#334155' },
-  btnText: { color: '#f8fafc', fontWeight: '700', fontSize: 16 },
-  help: { marginTop: 24, color: '#64748b', fontSize: 13 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', alignItems: 'center' },
-  modalBox: { backgroundColor: '#1e293b', borderRadius: 16, padding: 24, width: '85%', borderWidth: 1, borderColor: '#334155' },
-  modalTitle: { color: '#f8fafc', fontSize: 18, fontWeight: '700', marginBottom: 4 },
-  modalSub: { color: '#64748b', fontSize: 12, marginBottom: 16 },
-  modalInput: { backgroundColor: '#0f172a', color: '#f8fafc', borderRadius: 10, padding: 12, fontSize: 16, marginBottom: 16, borderWidth: 1, borderColor: '#4f46e5' },
-  modalBtns: { flexDirection: 'row', gap: 12 },
-  modalCancel: { flex: 1, backgroundColor: '#0f172a', borderRadius: 10, padding: 12, alignItems: 'center' },
-  modalCancelText: { color: '#94a3b8', fontWeight: '600' },
-  modalSave: { flex: 1, backgroundColor: '#6366f1', borderRadius: 10, padding: 12, alignItems: 'center' },
-  modalSaveText: { color: '#fff', fontWeight: '700' },
+  container: {
+    flex: 1,
+    backgroundColor: C.bg,
+    paddingHorizontal: 24,
+    paddingTop: 48,
+    paddingBottom: 32,
+  },
+  topSection: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  iconBadge: {
+    width: 80,
+    height: 80,
+    borderRadius: 24,
+    backgroundColor: C.primaryBg,
+    borderWidth: 1,
+    borderColor: C.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  iconEmoji: {
+    fontSize: 36,
+  },
+  title: {
+    fontSize: 32,
+    fontWeight: '800',
+    color: C.text,
+    marginBottom: 6,
+    letterSpacing: -0.5,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: C.textSub,
+    letterSpacing: 0.2,
+  },
+  cardsSection: {
+    flex: 1,
+    justifyContent: 'center',
+    gap: 12,
+  },
+  sendCard: {
+    backgroundColor: C.primary,
+    borderRadius: 24,
+    padding: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+  },
+  sendIconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(0,0,0,0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sendIconText: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: '#052E16',
+  },
+  cardTextBlock: {
+    flex: 1,
+  },
+  sendCardTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#052E16',
+    marginBottom: 2,
+  },
+  sendCardSub: {
+    fontSize: 13,
+    color: '#1A5C32',
+    fontWeight: '500',
+  },
+  receiveCard: {
+    backgroundColor: C.surface,
+    borderRadius: 24,
+    padding: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  receiveIconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: C.surface2,
+    borderWidth: 1,
+    borderColor: C.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  receiveIconText: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: C.text,
+  },
+  receiveCardTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: C.text,
+    marginBottom: 2,
+  },
+  receiveCardSub: {
+    fontSize: 13,
+    color: C.textSub,
+    fontWeight: '500',
+  },
+  helpContainer: {
+    alignItems: 'center',
+    paddingVertical: 8,
+  },
+  help: {
+    color: C.textDim,
+    fontSize: 13,
+    fontWeight: '500',
+  },
 });
