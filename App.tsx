@@ -20,10 +20,14 @@ export type RootStackParamList = {
   Transfer: {
     total: number;
     received: number;
+    fileName?: string;
+    fileIndex?: number;
+    fileTotal?: number;
   };
   Done: {
     filePath: string;
     verified: boolean;
+    fileCount?: number;
   };
   Help: undefined;
 };

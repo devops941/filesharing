@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   TextInput,
   Modal,
+  ScrollView,
 } from 'react-native';
 import * as DocumentPicker from 'expo-document-picker';
 import { CameraView, useCameraPermissions } from 'expo-camera';
@@ -17,13 +18,13 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../App';
 import { startScan, stopScan } from '../net/discovery';
 import type { Device } from '../net/discovery';
-import { sendFile } from '../net/sender';
+import { sendFiles } from '../net/sender';
 import type { PickedFile } from '../net/sender';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Send'>;
 
 export default function SendScreen({ navigation }: Props) {
-  const [file, setFile] = useState<PickedFile | null>(null);
+  const [files, setFiles] = useState<PickedFile[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [scanning, setScanning] = useState(false);
   const [manualIp, setManualIp] = useState('');
@@ -45,20 +46,21 @@ export default function SendScreen({ navigation }: Props) {
     };
   }, []);
 
-  async function pickFile() {
+  async function pickFiles() {
     try {
       const result = await DocumentPicker.getDocumentAsync({
         copyToCacheDirectory: false,
-        multiple: false,
+        multiple: true,
       });
       if (result.canceled) return;
-      const asset = result.assets[0];
-      setFile({
-        uri: asset.uri,
-        name: asset.name,
-        size: asset.size ?? 0,
-        type: asset.mimeType ?? undefined,
-      });
+      setFiles(
+        result.assets.map(a => ({
+          uri: a.uri,
+          name: a.name,
+          size: a.size ?? 0,
+          type: a.mimeType ?? undefined,
+        })),
+      );
     } catch {
       // user cancelled
     }
@@ -95,12 +97,18 @@ export default function SendScreen({ navigation }: Props) {
   }
 
   async function connectToDevice(device: Device) {
-    if (!file) {
-      Alert.alert('Pick a file first');
+    if (files.length === 0) {
+      Alert.alert('Pick files first');
       return;
     }
-    navigation.navigate('Transfer', { total: file.size, received: 0 });
-    await sendFile(device, file, {
+    navigation.navigate('Transfer', {
+      total: files[0].size,
+      received: 0,
+      fileName: files[0].name,
+      fileIndex: 1,
+      fileTotal: files.length,
+    });
+    await sendFiles(device, files, {
       confirmCode: code =>
         new Promise(resolve => {
           navigation.navigate('Pairing', {
@@ -108,83 +116,118 @@ export default function SendScreen({ navigation }: Props) {
             onConfirm: (ok: boolean) => resolve(ok),
           });
         }),
-      progress: sent => navigation.setParams({ received: sent } as any),
-      done: () => navigation.navigate('Done', { filePath: '', verified: true }),
-      rejected: reason => Alert.alert('Rejected', reason),
+      progress: (idx, sent, fileTotal) => {
+        navigation.setParams({
+          received: sent,
+          total: fileTotal,
+          fileIndex: idx + 1,
+          fileName: files[idx]?.name ?? '',
+        } as any);
+      },
+      done: () =>
+        navigation.navigate('Done', {
+          filePath: '',
+          verified: true,
+          fileCount: files.length,
+        }),
+      rejected: (_idx, reason) => Alert.alert('Rejected', reason),
       error: msg => Alert.alert('Error', msg),
       cancelled: () => navigation.goBack(),
     });
   }
 
   async function connectManual() {
-    if (!manualIp.trim()) return;
-    const device: Device = { name: 'Manual', ip: manualIp.trim(), port: 47800 };
+    const ip = manualIp.trim();
+    if (!ip) return;
+    const device: Device = { name: 'Manual', ip, port: 47800 };
     await connectToDevice(device);
   }
 
+  const totalSize = files.reduce((s, f) => s + f.size, 0);
+
   return (
     <SafeAreaView style={styles.container}>
-      <Text style={styles.title}>Send File</Text>
+      <ScrollView showsVerticalScrollIndicator={false}>
+        <Text style={styles.title}>Send Files</Text>
 
-      {/* File picker */}
-      <TouchableOpacity style={styles.btn} onPress={pickFile}>
-        <Text style={styles.btnText} numberOfLines={1}>
-          {file ? `📄 ${file.name}` : 'Pick File'}
-        </Text>
-      </TouchableOpacity>
-      {file && (
-        <Text style={styles.fileSize}>
-          {(file.size / 1024 / 1024).toFixed(2)} MB
-        </Text>
-      )}
-
-      {/* Nearby devices via mDNS */}
-      <Text style={styles.sectionTitle}>Nearby Devices</Text>
-      {scanning && devices.length === 0 && (
-        <ActivityIndicator color="#6366f1" style={{ marginVertical: 8 }} />
-      )}
-      <FlatList
-        data={devices}
-        keyExtractor={d => d.ip}
-        renderItem={({ item }) => (
-          <TouchableOpacity
-            style={styles.deviceRow}
-            onPress={() => connectToDevice(item)}>
-            <Text style={styles.deviceName}>
-              {item.platform === 'android' ? '🤖' : '🍎'} {item.name}
-            </Text>
-            <Text style={styles.deviceIp}>{item.ip}</Text>
-          </TouchableOpacity>
-        )}
-        ListEmptyComponent={
-          <Text style={styles.empty}>Scanning… open Receive on the other phone</Text>
-        }
-        style={styles.list}
-      />
-
-      {/* QR scan */}
-      <Text style={styles.sectionTitle}>Scan QR Code</Text>
-      <TouchableOpacity style={[styles.btn, styles.btnSecondary]} onPress={openQrScanner}>
-        <Text style={styles.btnText}>📷  Scan Receiver QR Code</Text>
-      </TouchableOpacity>
-
-      {/* Manual IP */}
-      <Text style={styles.sectionTitle}>Enter IP Manually</Text>
-      <View style={styles.row}>
-        <TextInput
-          style={styles.input}
-          placeholder="192.168.x.x"
-          placeholderTextColor="#475569"
-          value={manualIp}
-          onChangeText={setManualIp}
-          keyboardType="numeric"
-        />
-        <TouchableOpacity style={styles.goBtn} onPress={connectManual}>
-          <Text style={styles.goBtnText}>Go</Text>
+        <TouchableOpacity style={styles.btn} onPress={pickFiles}>
+          <Text style={styles.btnText}>
+            {files.length > 0
+              ? `${files.length} file${files.length > 1 ? 's' : ''} selected`
+              : 'Pick Files'}
+          </Text>
         </TouchableOpacity>
-      </View>
 
-      {/* QR Scanner Modal */}
+        {files.length > 0 && (
+          <View style={styles.fileList}>
+            <Text style={styles.fileSummary}>
+              {(totalSize / 1024 / 1024).toFixed(2)} MB total
+            </Text>
+            {files.map((f, i) => (
+              <View key={i} style={styles.fileRow}>
+                <Text style={styles.fileRowName} numberOfLines={1}>
+                  📄 {f.name}
+                </Text>
+                <Text style={styles.fileRowSize}>
+                  {(f.size / 1024 / 1024).toFixed(1)} MB
+                </Text>
+              </View>
+            ))}
+          </View>
+        )}
+
+        <Text style={styles.sectionTitle}>Nearby Devices</Text>
+        {scanning && devices.length === 0 && (
+          <ActivityIndicator color="#6366f1" style={{ marginVertical: 8 }} />
+        )}
+        <FlatList
+          data={devices}
+          keyExtractor={d => d.ip}
+          renderItem={({ item }) => (
+            <TouchableOpacity
+              style={styles.deviceRow}
+              onPress={() => connectToDevice(item)}>
+              <Text style={styles.deviceName}>
+                {item.platform === 'android' ? '🤖' : '🍎'} {item.name}
+              </Text>
+              <Text style={styles.deviceIp}>{item.ip}</Text>
+            </TouchableOpacity>
+          )}
+          ListEmptyComponent={
+            <Text style={styles.empty}>
+              Scanning… open Receive on the other phone
+            </Text>
+          }
+          style={styles.list}
+          scrollEnabled={false}
+        />
+
+        <Text style={styles.sectionTitle}>Scan QR Code</Text>
+        <TouchableOpacity
+          style={[styles.btn, styles.btnSecondary]}
+          onPress={openQrScanner}>
+          <Text style={styles.btnText}>📷  Scan Receiver QR Code</Text>
+        </TouchableOpacity>
+
+        <Text style={styles.sectionTitle}>Enter IP Manually</Text>
+        <Text style={styles.ipHint}>
+          Look at the receiver's screen for their IP address
+        </Text>
+        <View style={styles.row}>
+          <TextInput
+            style={styles.input}
+            placeholder="192.168.x.x"
+            placeholderTextColor="#475569"
+            value={manualIp}
+            onChangeText={setManualIp}
+            keyboardType="numeric"
+          />
+          <TouchableOpacity style={styles.goBtn} onPress={connectManual}>
+            <Text style={styles.goBtnText}>Go</Text>
+          </TouchableOpacity>
+        </View>
+      </ScrollView>
+
       <Modal visible={showQrScanner} animationType="slide">
         <View style={styles.scannerContainer}>
           <CameraView
@@ -194,7 +237,9 @@ export default function SendScreen({ navigation }: Props) {
             onBarcodeScanned={handleQrScanned}
           />
           <View style={styles.scannerOverlay}>
-            <Text style={styles.scannerLabel}>Point at the QR code on the receiver</Text>
+            <Text style={styles.scannerLabel}>
+              Point at the QR code on the receiver
+            </Text>
             <TouchableOpacity
               style={styles.cancelScanBtn}
               onPress={() => setShowQrScanner(false)}>
@@ -213,14 +258,19 @@ const styles = StyleSheet.create({
   btn: { backgroundColor: '#6366f1', borderRadius: 12, padding: 16, alignItems: 'center', marginBottom: 4 },
   btnSecondary: { backgroundColor: '#1e293b', borderWidth: 1, borderColor: '#4f46e5', marginTop: 4 },
   btnText: { color: '#f8fafc', fontWeight: '600', fontSize: 15 },
-  fileSize: { color: '#94a3b8', fontSize: 12, marginBottom: 12, textAlign: 'center' },
+  fileList: { marginBottom: 8, marginTop: 8 },
+  fileSummary: { color: '#64748b', fontSize: 12, textAlign: 'right', marginBottom: 6 },
+  fileRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#1e293b', borderRadius: 8, padding: 10, marginBottom: 4 },
+  fileRowName: { color: '#f8fafc', fontSize: 13, flex: 1, marginRight: 8 },
+  fileRowSize: { color: '#64748b', fontSize: 12 },
   sectionTitle: { color: '#64748b', fontSize: 11, fontWeight: '700', marginTop: 18, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 1 },
-  list: { maxHeight: 180 },
+  list: { maxHeight: 200 },
   deviceRow: { backgroundColor: '#1e293b', borderRadius: 10, padding: 14, marginBottom: 8 },
   deviceName: { color: '#f8fafc', fontSize: 15, fontWeight: '600' },
   deviceIp: { color: '#64748b', fontSize: 12, marginTop: 2 },
   empty: { color: '#475569', fontSize: 13, fontStyle: 'italic', textAlign: 'center', marginVertical: 8 },
-  row: { flexDirection: 'row', gap: 8, marginTop: 4 },
+  ipHint: { color: '#475569', fontSize: 12, marginBottom: 8, fontStyle: 'italic' },
+  row: { flexDirection: 'row', gap: 8, marginTop: 4, marginBottom: 24 },
   input: { flex: 1, backgroundColor: '#1e293b', color: '#f8fafc', borderRadius: 10, padding: 12, fontSize: 14 },
   goBtn: { backgroundColor: '#6366f1', borderRadius: 10, paddingHorizontal: 20, justifyContent: 'center' },
   goBtnText: { color: '#f8fafc', fontWeight: '700' },

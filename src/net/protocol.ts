@@ -11,6 +11,7 @@ export enum T {
   DONE,
   CANCEL,
   ERROR,
+  FINISH,
 }
 
 // Frame layout: [4-byte big-endian length][1-byte type][payload]

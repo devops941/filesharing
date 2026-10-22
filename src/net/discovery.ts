@@ -23,8 +23,10 @@ export function stopAdvertising(deviceName: string) {
 }
 
 export function startScan(onFound: (d: Device) => void) {
+  // Remove old listeners before adding new one to prevent accumulation
+  zc.removeAllListeners('resolved');
   zc.on('resolved', (s: any) => {
-    const ip = s.addresses?.find((a: string) => a.includes('.')); // IPv4 only
+    const ip = s.addresses?.find((a: string) => a.includes('.'));
     if (ip) {
       onFound({
         name: s.name,

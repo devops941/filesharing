@@ -49,6 +49,13 @@ export function startReceiver(ui: ReceiverUI): ReturnType<typeof TcpSocket.creat
     let outPath = '';
     let received = 0;
     let idx = 0;
+    let lastOutPath = '';
+    let doneCalled = false;
+    function finalize() {
+      if (doneCalled) return;
+      doneCalled = true;
+      if (lastOutPath) ui.done(lastOutPath, true);
+    }
 
     const parser = new FrameParser(async (type, p) => {
       try {
@@ -101,7 +108,11 @@ export function startReceiver(ui: ReceiverUI): ReturnType<typeof TcpSocket.creat
 
             if (result.tag === FINAL_TAG) {
               socket.write(frame(T.DONE));
-              ui.done(outPath, true);
+              lastOutPath = outPath;
+              decrypt = null;
+              outPath = '';
+              received = 0;
+              idx = 0;
             }
             break;
           }
@@ -120,6 +131,12 @@ export function startReceiver(ui: ReceiverUI): ReturnType<typeof TcpSocket.creat
             socket.destroy();
             break;
           }
+
+          case T.FINISH: {
+            finalize();
+            socket.destroy();
+            break;
+          }
         }
       } catch (err: any) {
         ui.error(err?.message ?? 'Unknown error');
@@ -129,6 +146,7 @@ export function startReceiver(ui: ReceiverUI): ReturnType<typeof TcpSocket.creat
 
     socket.on('data', d => parser.push(d as Buffer));
     socket.on('error', err => ui.error(err.message));
+    socket.on('close', () => finalize());
   });
 
   server.listen({ port: PORT, host: '0.0.0.0' });

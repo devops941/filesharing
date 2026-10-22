@@ -30,6 +30,12 @@ export default function TransferScreen({ navigation, route }: Props) {
   return (
     <SafeAreaView style={styles.container}>
       <Text style={styles.title}>Transferring...</Text>
+      {route.params.fileTotal && route.params.fileTotal > 1 && (
+        <Text style={styles.fileInfo}>
+          File {route.params.fileIndex ?? 1} of {route.params.fileTotal}
+          {route.params.fileName ? `: ${route.params.fileName}` : ''}
+        </Text>
+      )}
       <Text style={styles.pct}>{pct}%</Text>
 
       <View style={styles.barBg}>
@@ -62,4 +68,5 @@ const styles = StyleSheet.create({
   stat: { color: '#94a3b8', fontSize: 13 },
   cancelBtn: { backgroundColor: '#1e293b', borderRadius: 14, padding: 16, paddingHorizontal: 40, borderWidth: 1, borderColor: '#ef4444' },
   cancelText: { color: '#ef4444', fontWeight: '600', fontSize: 15 },
+  fileInfo: { color: '#64748b', fontSize: 13, marginBottom: 16, textAlign: 'center', maxWidth: '90%' as any },
 });

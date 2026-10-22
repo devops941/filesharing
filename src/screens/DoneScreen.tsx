@@ -20,6 +20,9 @@ export default function DoneScreen({ navigation, route }: Props) {
       <Text style={styles.title}>
         {verified ? 'Transfer Complete' : 'Transfer Done (unverified)'}
       </Text>
+      {(route.params.fileCount ?? 1) > 1 && (
+        <Text style={styles.fileCount}>{route.params.fileCount} files transferred</Text>
+      )}
       {verified && (
         <Text style={styles.badge}>Verified — file integrity confirmed</Text>
       )}
@@ -49,6 +52,7 @@ const styles = StyleSheet.create({
   icon: { fontSize: 64, color: '#22c55e', marginBottom: 16 },
   title: { fontSize: 24, fontWeight: '700', color: '#f8fafc', marginBottom: 8 },
   badge: { color: '#22c55e', fontSize: 13, marginBottom: 24, backgroundColor: '#052e16', paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20 },
+  fileCount: { color: '#818cf8', fontSize: 15, fontWeight: '600', marginBottom: 8 },
   path: { color: '#64748b', fontSize: 12, textAlign: 'center', marginBottom: 40, maxWidth: 300 },
   btn: { width: '100%', backgroundColor: '#6366f1', borderRadius: 14, padding: 18, alignItems: 'center', marginBottom: 12 },
   btnSecondary: { backgroundColor: '#1e293b', borderWidth: 1, borderColor: '#334155' },

@@ -6,7 +6,6 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
-    "newArchEnabled": true,
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
@@ -17,7 +16,9 @@
       "supportsTablet": false,
       "infoPlist": {
         "NSLocalNetworkUsageDescription": "SecureShare needs local network access to discover nearby devices for file transfer",
-        "NSBonjourServices": ["_secureshare._tcp"],
+        "NSBonjourServices": [
+          "_secureshare._tcp"
+        ],
         "NSCameraUsageDescription": "SecureShare needs camera access to scan QR codes for device pairing",
         "UIFileSharingEnabled": true,
         "LSSupportsOpeningDocumentsInPlace": true
@@ -37,7 +38,10 @@
         "android.permission.NEARBY_WIFI_DEVICES",
         "android.permission.CAMERA",
         "android.permission.WAKE_LOCK",
-        "android.permission.FOREGROUND_SERVICE"
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE"
       ]
     },
     "plugins": [
@@ -54,10 +58,17 @@
         {}
       ]
     ],
+    "updates": {
+      "url": "https://u.expo.dev/33d60e1c-afd8-4569-88af-d01b310460e8",
+      "enabled": true,
+      "fallbackToCacheTimeout": 0
+    },
+    "runtimeVersion": "1.0.0",
     "extra": {
       "eas": {
-        "projectId": "your-eas-project-id"
+        "projectId": "33d60e1c-afd8-4569-88af-d01b310460e8"
       }
-    }
+    },
+    "owner": "kaizeninfinities"
   }
 }
