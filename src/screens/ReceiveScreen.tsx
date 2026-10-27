@@ -11,15 +11,22 @@ import {
   ActivityIndicator,
 } from 'react-native';
 import QRCode from 'react-native-qrcode-svg';
-import TcpSocket from 'react-native-tcp-socket';
 import { useKeepAwake } from 'expo-keep-awake';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../App';
-import { startAdvertising, stopAdvertising } from '../net/discovery';
 import { startReceiver } from '../net/receiver';
 import type { OfferInfo } from '../net/receiver';
 import { PORT } from '../config';
 import { getDeviceName, saveDeviceName } from '../utils/deviceName';
+import { detectLocalIP } from '../utils/networkSettings';
+import { requestPermissions } from '../permissions';
+import {
+  createWifiDirectGroup,
+  removeWifiDirectGroup,
+  startWifiDirectDiscovery,
+  stopWifiDirectDiscovery,
+  isWifiDirectSupported,
+} from '../net/wifiDirect';
 import {
   notifyReceiving,
   notifyDone,
@@ -44,86 +51,13 @@ const C = {
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Receive'>;
 
-function isLanIP(ip: string): boolean {
-  if (!ip || ip === '127.0.0.1') return false;
-  if (ip.startsWith('192.168.') || ip.startsWith('10.')) return true;
-  const parts = ip.split('.');
-  if (parts[0] === '172') {
-    const b = parseInt(parts[1], 10);
-    return b >= 16 && b <= 31;
-  }
-  return false;
-}
-
-function detectLocalIP(): Promise<string> {
-  return new Promise(resolve => {
-    let resolved = false;
-    let firstLanIp = '';
-    const hotspotIps = ['192.168.43.1', '192.168.44.1', '172.20.10.1', '10.42.0.1'];
-    let pendingHotspot = hotspotIps.length;
-
-    function useHotspot(ip: string) {
-      if (!resolved) { resolved = true; resolve(ip); }
-    }
-
-    function hotspotCheckDone() {
-      pendingHotspot--;
-      if (pendingHotspot === 0 && !resolved && firstLanIp) {
-        resolved = true;
-        resolve(firstLanIp);
-      }
-    }
-
-    function lanFound(ip: string) {
-      if (!isLanIP(ip)) return; // discard mobile-data IPs
-      firstLanIp = firstLanIp || ip;
-      if (pendingHotspot === 0 && !resolved) {
-        resolved = true;
-        resolve(ip);
-      }
-    }
-
-    setTimeout(() => { if (!resolved) { resolved = true; resolve(firstLanIp); } }, 5000);
-
-    // Hotspot bind checks — succeeds only if this phone IS the hotspot provider
-    for (const hotspotIp of hotspotIps) {
-      try {
-        const s = TcpSocket.createServer(() => {});
-        s.listen({ port: 0, host: hotspotIp });
-        s.on('listening', () => { try { s.close(); } catch {} useHotspot(hotspotIp); });
-        s.on('error', () => hotspotCheckDone());
-      } catch { hotspotCheckDone(); }
-    }
-
-    // Outbound probes — source IP reveals our WiFi address; private-IP filter rejects mobile data
-    const probeHosts: [string, number][] = [
-      ['8.8.8.8', 53],
-      ['1.1.1.1', 53],
-      ['192.168.43.1', 47800],
-      ['192.168.44.1', 47800],
-      ['172.20.10.1', 47800],
-      ['10.42.0.1', 47800],
-    ];
-    for (const [host, port] of probeHosts) {
-      const sock = TcpSocket.createConnection({ host, port }, () => {
-        const addr = (sock as any).address?.();
-        try { sock.destroy(); } catch {}
-        lanFound(addr?.address ?? '');
-      });
-      (sock as any).on('error', () => {});
-    }
-  });
-}
-
 export default function ReceiveScreen({ navigation }: Props) {
   useKeepAwake();
   const [deviceName, setDeviceName] = useState('');
-  const [ip, setIp] = useState('');
-  const [ipLoading, setIpLoading] = useState(true);
+  const [ip, setIp] = useState('192.168.49.1');
   const [showRename, setShowRename] = useState(false);
   const [newName, setNewName] = useState('');
   const serverRef = useRef<any>(null);
-  const advertisingName = useRef('');
   const currentFileRef = useRef<{ name: string; size: number } | null>(null);
 
   useEffect(() => {
@@ -133,14 +67,24 @@ export default function ReceiveScreen({ navigation }: Props) {
     getDeviceName().then(name => {
       if (!mounted) return;
       setDeviceName(name);
-      advertisingName.current = name;
-      startAdvertising(name);
     });
 
-    detectLocalIP().then(detectedIp => {
+    requestPermissions('receive').then(() => {
       if (!mounted) return;
-      setIp(detectedIp);
-      setIpLoading(false);
+      isWifiDirectSupported().then(supported => {
+        if (supported && mounted) {
+          createWifiDirectGroup().then(() => {
+            if (mounted) {
+              detectLocalIP().then(p2pIp => {
+                if (mounted && p2pIp) {
+                  setIp(p2pIp);
+                }
+              });
+            }
+          });
+          startWifiDirectDiscovery().catch(() => {});
+        }
+      });
     });
 
     serverRef.current = startReceiver({
@@ -204,8 +148,9 @@ export default function ReceiveScreen({ navigation }: Props) {
       mounted = false;
       unmounted = true;
       registerTransferCancel(null);
-      if (advertisingName.current) stopAdvertising(advertisingName.current);
       serverRef.current?.close();
+      removeWifiDirectGroup().catch(() => {});
+      stopWifiDirectDiscovery().catch(() => {});
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -213,23 +158,12 @@ export default function ReceiveScreen({ navigation }: Props) {
   async function handleRename() {
     const trimmed = newName.trim();
     if (!trimmed) return;
-    if (advertisingName.current) stopAdvertising(advertisingName.current);
     await saveDeviceName(trimmed);
     setDeviceName(trimmed);
-    advertisingName.current = trimmed;
-    startAdvertising(trimmed);
     setShowRename(false);
   }
 
-  async function retryDetectIP() {
-    setIpLoading(true);
-    setIp('');
-    const detectedIp = await detectLocalIP();
-    setIp(detectedIp);
-    setIpLoading(false);
-  }
-
-  const qrData = JSON.stringify({ ip, port: PORT, name: deviceName });
+  const qrData = JSON.stringify({ ip: ip || '192.168.49.1', port: PORT, name: deviceName, isWifiDirect: true });
 
   return (
     <SafeAreaView style={styles.container}>
@@ -244,21 +178,18 @@ export default function ReceiveScreen({ navigation }: Props) {
 
       {/* Title */}
       <Text style={styles.title}>Receive</Text>
-      <Text style={styles.subtitle}>Let the sender scan this code</Text>
+      <Text style={styles.subtitle}>Let the sender scan this code or select your device</Text>
 
-      {/* No-network warning */}
-      {!ip && !ipLoading && (
-        <View style={styles.noNetWarn}>
-          <Text style={styles.noNetMsg}>No network detected</Text>
-          <TouchableOpacity style={styles.retryBtn} onPress={retryDetectIP}>
-            <Text style={styles.retryBtnText}>Retry</Text>
-          </TouchableOpacity>
-        </View>
-      )}
+      {/* Quick Share Mode Active badge */}
+      <View style={styles.hotspotActiveBadge}>
+        <Text style={styles.hotspotActiveText}>
+          ⚡ Google Quick Share (Wi-Fi Direct) Ready · Max 50 MB/s
+        </Text>
+      </View>
 
       {/* QR card */}
       <View style={styles.qrCard}>
-        {ip && deviceName ? (
+        {deviceName ? (
           <QRCode
             value={qrData}
             size={200}
@@ -268,7 +199,7 @@ export default function ReceiveScreen({ navigation }: Props) {
         ) : (
           <View style={styles.qrPlaceholder}>
             <ActivityIndicator color={C.primary} />
-            <Text style={styles.qrWait}>Preparing...</Text>
+            <Text style={styles.qrWait}>Preparing Quick Share...</Text>
           </View>
         )}
       </View>
@@ -460,5 +391,21 @@ const styles = StyleSheet.create({
   modalSaveText: {
     color: '#0F1117',
     fontWeight: '700',
+  },
+  hotspotActiveBadge: {
+    backgroundColor: C.primaryBg,
+    borderColor: C.primary,
+    borderWidth: 1,
+    borderRadius: 100,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    marginBottom: 16,
+    marginTop: -8,
+  },
+  hotspotActiveText: {
+    color: C.primary,
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
   },
 });

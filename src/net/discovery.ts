@@ -7,6 +7,8 @@ export type Device = {
   ip: string;
   port: number;
   platform?: string;
+  isWifiDirect?: boolean;
+  p2pAddress?: string;
 };
 
 const zc = new Zeroconf();

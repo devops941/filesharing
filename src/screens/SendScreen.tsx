@@ -16,7 +16,6 @@ import * as DocumentPicker from 'expo-document-picker';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../App';
-import { startScan, stopScan } from '../net/discovery';
 import type { Device } from '../net/discovery';
 import { sendFiles } from '../net/sender';
 import type { PickedFile } from '../net/sender';
@@ -27,6 +26,17 @@ import {
   resetNotifProgress,
 } from '../notifications';
 import { registerTransferCancel } from '../net/activeTransfer';
+import { requestPermissions } from '../permissions';
+import {
+  startWifiDirectDiscovery,
+  stopWifiDirectDiscovery,
+  subscribeWifiDirectPeers,
+  connectWifiDirect,
+  cancelConnectWifiDirect,
+  removeWifiDirectGroup,
+  subscribeWifiDirectConnection,
+  getWifiDirectConnectionInfo,
+} from '../net/wifiDirect';
 
 const C = {
   bg: '#0F1117',
@@ -51,6 +61,7 @@ export default function SendScreen({ navigation }: Props) {
   const [showQrScanner, setShowQrScanner] = useState(false);
   const [qrScanned, setQrScanned] = useState(false);
   const [connecting, setConnecting] = useState(false);
+  const [connectingDevice, setConnectingDevice] = useState<Device | null>(null);
   const cancelConnectionRef = useRef<(() => void) | null>(null);
   const [cameraPermission, requestCameraPermission] = useCameraPermissions();
   const scanLineAnim = useRef(new Animated.Value(0)).current;
@@ -97,15 +108,31 @@ export default function SendScreen({ navigation }: Props) {
   }, [ring1, ring2, ring3]);
 
   useEffect(() => {
-    setScanning(true);
-    startScan(d => {
-      setDevices(prev => {
-        if (prev.find(x => x.ip === d.ip)) return prev;
-        return [...prev, d];
+    let unsubP2p = () => {};
+    let mounted = true;
+
+    requestPermissions('send').then(() => {
+      if (!mounted) return;
+      setScanning(true);
+      startWifiDirectDiscovery().catch(() => {});
+      unsubP2p = subscribeWifiDirectPeers(peers => {
+        if (!mounted) return;
+        setDevices(
+          peers.map(p => ({
+            name: p.deviceName || 'Nearby Device',
+            ip: '',
+            port: 47800,
+            isWifiDirect: true,
+            p2pAddress: p.deviceAddress,
+          })),
+        );
       });
     });
+
     return () => {
-      stopScan();
+      mounted = false;
+      stopWifiDirectDiscovery().catch(() => {});
+      unsubP2p();
       setScanning(false);
     };
   }, []);
@@ -165,6 +192,73 @@ export default function SendScreen({ navigation }: Props) {
       Alert.alert('Pick files first');
       return;
     }
+
+    if (device.isWifiDirect && device.p2pAddress) {
+      setConnectingDevice(device);
+      setConnecting(true);
+
+      let cancelled = false;
+      let handled = false;
+      let connectionSub: (() => void) | null = null;
+
+      cancelConnectionRef.current = () => {
+        cancelled = true;
+        cancelConnectWifiDirect().catch(() => {});
+        removeWifiDirectGroup().catch(() => {});
+        connectionSub?.();
+        setConnecting(false);
+      };
+
+      connectionSub = subscribeWifiDirectConnection(async info => {
+        if (cancelled || handled) return;
+        if (info.isConnected) {
+          handled = true;
+          connectionSub?.();
+          const targetIp = info.groupOwnerAddress || '192.168.49.1';
+          const p2pDevice: Device = {
+            ...device,
+            ip: targetIp,
+          };
+          startSendProcess(p2pDevice, true);
+        }
+      });
+
+      const ok = await connectWifiDirect(device.p2pAddress);
+      if (!ok && !cancelled) {
+        setConnecting(false);
+        cancelConnectionRef.current = null;
+        connectionSub?.();
+        Alert.alert(
+          'Quick Share Failed',
+          'Make sure the receiver is on the Receive screen and accepts the connection prompt.',
+        );
+        return;
+      }
+
+      // Fallback check after 2s if onConnectionChanged fired before subscription was active
+      setTimeout(async () => {
+        if (!handled && !cancelled) {
+          const info = await getWifiDirectConnectionInfo();
+          if (info.isConnected && !handled && !cancelled) {
+            handled = true;
+            connectionSub?.();
+            const targetIp = info.groupOwnerAddress || '192.168.49.1';
+            const p2pDevice: Device = {
+              ...device,
+              ip: targetIp,
+            };
+            startSendProcess(p2pDevice, true);
+          }
+        }
+      }, 2000);
+
+      return;
+    }
+
+    startSendProcess(device, false);
+  }
+
+  async function startSendProcess(device: Device, isP2p = false) {
     const transferParams = {
       total: totalSize,
       received: 0,
@@ -173,10 +267,17 @@ export default function SendScreen({ navigation }: Props) {
       fileTotal: files.length,
     };
     resetNotifProgress();
+    setConnectingDevice(device);
     setConnecting(true);
     const cancelRef = { cancel: () => {} };
-    cancelConnectionRef.current = () => cancelRef.cancel();
-    registerTransferCancel(() => cancelRef.cancel());
+    cancelConnectionRef.current = () => {
+      cancelRef.cancel();
+      if (isP2p) removeWifiDirectGroup().catch(() => {});
+    };
+    registerTransferCancel(() => {
+      cancelRef.cancel();
+      if (isP2p) removeWifiDirectGroup().catch(() => {});
+    });
     await sendFiles(device, files, {
       confirmCode: code =>
         new Promise(resolve => {
@@ -200,21 +301,25 @@ export default function SendScreen({ navigation }: Props) {
       },
       done: () => {
         registerTransferCancel(null);
+        if (isP2p) removeWifiDirectGroup().catch(() => {});
         navigation.navigate('Done', { filePath: '', verified: true, fileCount: files.length });
         notifyDone('sent', files.map(f => f.name)).catch(() => {});
       },
       rejected: (_idx, reason) => {
         registerTransferCancel(null);
+        if (isP2p) removeWifiDirectGroup().catch(() => {});
         Alert.alert('Rejected', reason);
       },
       error: msg => {
         registerTransferCancel(null);
+        if (isP2p) removeWifiDirectGroup().catch(() => {});
         setConnecting(false);
         notifyCancelled().catch(() => {});
         Alert.alert('Connection Failed', msg, [{ text: 'OK' }]);
       },
       cancelled: () => {
         registerTransferCancel(null);
+        if (isP2p) removeWifiDirectGroup().catch(() => {});
         setConnecting(false);
         cancelConnectionRef.current = null;
         notifyCancelled().catch(() => {});
@@ -310,18 +415,21 @@ export default function SendScreen({ navigation }: Props) {
               showsHorizontalScrollIndicator={false}
               style={styles.deviceScroll}
               contentContainerStyle={styles.deviceScrollContent}>
-              {devices.map(item => (
+              {devices.map((item, idx) => (
                 <TouchableOpacity
-                  key={item.ip}
+                  key={item.p2pAddress || item.ip || idx}
                   onPress={() => connectToDevice(item)}
                   style={styles.deviceCard}
                   activeOpacity={0.75}>
                   <View style={styles.deviceIconWrap}>
-                    <Text style={styles.deviceIcon}>📱</Text>
+                    <Text style={styles.deviceIcon}>{item.isWifiDirect ? '⚡' : '📱'}</Text>
                   </View>
                   <Text style={styles.deviceName} numberOfLines={1}>
                     {item.name}
                   </Text>
+                  {item.isWifiDirect && (
+                    <Text style={styles.deviceDirectBadge}>Quick Share</Text>
+                  )}
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -399,10 +507,20 @@ export default function SendScreen({ navigation }: Props) {
         <View style={styles.connectingOverlay}>
           <View style={styles.connectingBox}>
             <ActivityIndicator color={C.primary} size="large" />
-            <Text style={styles.connectingTitle}>Connecting</Text>
-            <Text style={styles.connectingHint}>
-              Make sure the receiver's phone has Receive Mode open
+            <Text style={styles.connectingTitle}>
+              Connecting{connectingDevice?.name ? ` to ${connectingDevice.name}` : ''}
             </Text>
+            <Text style={styles.connectingIp}>
+              ⚡ Google Quick Share (Wi-Fi Direct)
+            </Text>
+            <Text style={styles.connectingHint}>
+              Accept the invitation prompt on the receiver device...
+            </Text>
+            <View style={styles.hotspotActiveBadgeSmall}>
+              <Text style={styles.hotspotActiveTextSmall}>
+                ⚡ Quick Share Direct Connection Active
+              </Text>
+            </View>
             <TouchableOpacity
               style={styles.connectingCancel}
               onPress={() => {
@@ -570,6 +688,16 @@ const styles = StyleSheet.create({
     color: C.text,
     textAlign: 'center',
   },
+  deviceDirectBadge: {
+    color: '#4ADE80',
+    fontSize: 10,
+    fontWeight: '700',
+    backgroundColor: '#052E16',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    marginTop: 4,
+  },
 
   // QR button
   qrBtn: {
@@ -726,13 +854,64 @@ const styles = StyleSheet.create({
   },
   connectingTitle: {
     color: C.text,
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '700',
+    textAlign: 'center',
+  },
+  connectingIp: {
+    color: C.accent,
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: -4,
   },
   connectingHint: {
     color: C.textSub,
     fontSize: 13,
     textAlign: 'center',
+  },
+  connectingWarningBox: {
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.25)',
+    padding: 10,
+    marginTop: 4,
+  },
+  hotspotActiveBadgeSmall: {
+    backgroundColor: '#052E16',
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#166534',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginTop: 10,
+    alignItems: 'center',
+    width: '100%',
+  },
+  hotspotActiveTextSmall: {
+    color: '#4ADE80',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  connectingWarningText: {
+    color: '#FCA5A5',
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 16,
+  },
+  connectingWifiBtn: {
+    marginTop: 10,
+    backgroundColor: C.primary,
+    borderRadius: 100,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    alignItems: 'center',
+    width: '100%',
+  },
+  connectingWifiBtnText: {
+    color: '#0F1117',
+    fontWeight: '700',
+    fontSize: 14,
   },
   connectingCancel: {
     marginTop: 8,

@@ -230,16 +230,12 @@ export async function sendFiles(
       destroyed = true;
       abortWaiters();
       ui.error(
-        `Cannot reach receiver at ${device.ip}\n\n` +
-        `Most likely fix: Use HOTSPOT\n` +
-        `• Phone A (receiver): Settings → Mobile Hotspot → ON\n` +
-        `• Phone B (sender): Connect to that hotspot WiFi\n` +
-        `• Then try again\n\n` +
-        `(Home WiFi routers block phone-to-phone traffic)`,
+        `Unable to reach receiver (${device.name || 'Device'} at ${device.ip}:${device.port}).\n\n` +
+        `Please ensure both devices have Wi-Fi turned ON, are placed close together, and the receiver screen is open.`,
       );
       socket.destroy();
       rejectTransfer(new Error('Connection timeout'));
-    }, 8000);
+    }, 12000);
 
     const parser = new FrameParser(async (type, p) => {
       try {

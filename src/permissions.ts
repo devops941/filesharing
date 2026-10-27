@@ -8,6 +8,10 @@ export async function requestPermissions(forAction: 'send' | 'receive' = 'send')
     perms.push(PermissionsAndroid.PERMISSIONS.CAMERA);
   }
 
+  // Location is required for Wi-Fi Direct peer discovery on Android
+  perms.push(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
+  perms.push(PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION);
+
   if (Platform.Version >= 33) {
     perms.push(PermissionsAndroid.PERMISSIONS.NEARBY_WIFI_DEVICES);
     perms.push('android.permission.POST_NOTIFICATIONS' as any);

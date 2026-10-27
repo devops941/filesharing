@@ -178,6 +178,10 @@ export function startReceiver(ui: ReceiverUI): ReturnType<typeof TcpSocket.creat
     socket.on('close', () => { parser.reset(); finalize(); });
   });
 
-  server.listen({ port: PORT, host: '0.0.0.0' });
+  server.on('error', (err: any) => {
+    ui.error(`Receiver server error on port ${PORT}: ${err?.message ?? err}`);
+  });
+
+  server.listen({ port: PORT, host: '0.0.0.0', reuseAddress: true });
   return server;
 }

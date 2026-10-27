@@ -13,9 +13,9 @@ import type { RootStackParamList } from '../../App';
 type Props = NativeStackScreenProps<RootStackParamList, 'Help'>;
 
 const ITEMS = [
-  { q: 'Devices not showing up?', a: 'Both phones must be on the same Wi-Fi or one phone\'s hotspot. Check that the Receive screen is open.' },
+  { q: 'Devices not showing up?', a: 'Make sure Wi-Fi is turned ON on both phones and the Receive screen is open. SecureShare uses Wi-Fi Direct (Quick Share) to connect directly without a router or hotspot.' },
   { q: 'Pairing code mismatch?', a: 'Tap Cancel and retry. A mismatch means someone else may be connecting.' },
-  { q: 'Transfer slow?', a: 'Wi-Fi direct / hotspot is fastest. Avoid router-heavy setups. Expected: 5–15 MB/s via JS bridge.' },
+  { q: 'Transfer slow?', a: 'Wi-Fi Direct is fastest (up to 50 MB/s). Keep both phones close to each other for maximum speed.' },
   { q: 'iOS not discovering Android?', a: 'Ensure NSBonjourServices is set in Info.plist and the app has Local Network permission.' },
   { q: 'Where are received files?', a: 'Android: Downloads/SecureShare. iOS: Files app → On My iPhone → SecureShare.' },
   { q: 'Is the transfer encrypted?', a: 'Yes — end-to-end with XChaCha20-Poly1305 (libsodium). The 6-digit code confirms key exchange.' },
