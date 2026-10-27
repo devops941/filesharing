@@ -1,142 +1,200 @@
-import { NativeModules, NativeEventEmitter, Platform } from 'react-native';
+import { NativeModules, DeviceEventEmitter, Platform } from 'react-native';
+import type { EmitterSubscription } from 'react-native';
 
-const { WifiP2pModule } = NativeModules;
-const eventEmitter = WifiP2pModule ? new NativeEventEmitter(WifiP2pModule) : null;
+const P2pNative = NativeModules.WifiP2pModule;
 
-export interface WifiP2pPeer {
+export type WifiP2pDevice = {
   deviceName: string;
   deviceAddress: string;
   primaryDeviceType?: string;
   status: number;
-}
+};
 
-export interface WifiP2pConnectionInfo {
+export type WifiP2pInfo = {
   isConnected: boolean;
   isGroupOwner: boolean;
-  groupOwnerAddress: string;
+  groupOwnerAddress?: { hostAddress?: string } | string;
+  groupFormed?: boolean;
+};
+
+function normalizeInfo(info: any): WifiP2pInfo {
+  const host =
+    typeof info?.groupOwnerAddress === 'string'
+      ? info.groupOwnerAddress
+      : info?.groupOwnerAddress?.hostAddress ?? '';
+  const connected = !!(info?.isConnected || info?.groupFormed);
+  return {
+    isConnected: connected,
+    groupFormed: connected,
+    isGroupOwner: !!info?.isGroupOwner,
+    groupOwnerAddress: { hostAddress: host },
+  };
 }
 
-/**
- * Checks if Wi-Fi Direct is supported on this device.
- */
-export async function isWifiDirectSupported(): Promise<boolean> {
-  if (Platform.OS !== 'android' || !WifiP2pModule) return false;
+export async function initWifiDirect(): Promise<boolean> {
+  if (Platform.OS !== 'android' || !P2pNative) return false;
   try {
-    return await WifiP2pModule.isSupported();
+    if (P2pNative.isSupported) {
+      const ok = await P2pNative.isSupported();
+      return !!ok;
+    }
+    return true;
   } catch {
     return false;
   }
 }
 
-/**
- * Starts continuous Wi-Fi Direct peer discovery.
- */
-export async function startWifiDirectDiscovery(): Promise<boolean> {
-  if (Platform.OS !== 'android' || !WifiP2pModule) return false;
+export async function startP2pDiscovery(): Promise<void> {
+  if (Platform.OS !== 'android' || !P2pNative) return;
   try {
-    return await WifiP2pModule.discoverPeers();
-  } catch (err) {
-    console.warn('[WifiDirect] discoverPeers error:', err);
-    return false;
+    await P2pNative.discoverPeers();
+  } catch (e) {
+    console.warn('[WifiDirect] startDiscovery:', e);
   }
 }
 
-/**
- * Stops Wi-Fi Direct peer discovery.
- */
-export async function stopWifiDirectDiscovery(): Promise<boolean> {
-  if (Platform.OS !== 'android' || !WifiP2pModule) return false;
+export async function stopP2pDiscovery(): Promise<void> {
+  if (Platform.OS !== 'android' || !P2pNative) return;
   try {
-    return await WifiP2pModule.stopPeerDiscovery();
-  } catch {
-    return false;
-  }
+    await P2pNative.stopPeerDiscovery();
+  } catch {}
 }
 
-/**
- * Connects to a Wi-Fi Direct peer using its MAC address.
- */
-export async function connectWifiDirect(deviceAddress: string): Promise<boolean> {
-  if (Platform.OS !== 'android' || !WifiP2pModule) return false;
-  try {
-    return await WifiP2pModule.connect(deviceAddress);
-  } catch (err) {
-    console.warn('[WifiDirect] connect error:', err);
-    return false;
+export function subscribeP2pPeers(
+  cb: (devices: WifiP2pDevice[]) => void,
+): EmitterSubscription | null {
+  if (Platform.OS !== 'android' || !P2pNative) return null;
+
+  const sub = DeviceEventEmitter.addListener(
+    'onPeersChanged',
+    (data: { devices?: WifiP2pDevice[] }) => {
+      if (Array.isArray(data?.devices)) {
+        cb(data.devices);
+      }
+    },
+  );
+
+  // Initial check immediately
+  if (P2pNative.getPeers) {
+    P2pNative.getPeers().then((devices: WifiP2pDevice[]) => {
+      if (Array.isArray(devices) && devices.length > 0) {
+        cb(devices);
+      }
+    }).catch(() => {});
   }
+
+  return sub;
 }
 
-/**
- * Cancels an ongoing Wi-Fi Direct connection attempt.
- */
-export async function cancelConnectWifiDirect(): Promise<boolean> {
-  if (Platform.OS !== 'android' || !WifiP2pModule) return false;
-  try {
-    return await WifiP2pModule.cancelConnect();
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Creates an autonomous Wi-Fi Direct group (acts as Group Owner at 192.168.49.1).
- */
-export async function createWifiDirectGroup(): Promise<boolean> {
-  if (Platform.OS !== 'android' || !WifiP2pModule) return false;
-  try {
-    return await WifiP2pModule.createGroup();
-  } catch (err) {
-    console.warn('[WifiDirect] createGroup error:', err);
-    return false;
-  }
-}
-
-/**
- * Removes the current Wi-Fi Direct group / disconnects.
- */
-export async function removeWifiDirectGroup(): Promise<boolean> {
-  if (Platform.OS !== 'android' || !WifiP2pModule) return false;
-  try {
-    return await WifiP2pModule.removeGroup();
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Gets the current Wi-Fi Direct connection info.
- */
-export async function getWifiDirectConnectionInfo(): Promise<WifiP2pConnectionInfo> {
-  if (Platform.OS !== 'android' || !WifiP2pModule) {
-    return { isConnected: false, isGroupOwner: false, groupOwnerAddress: '' };
-  }
-  try {
-    return await WifiP2pModule.getConnectionInfo();
-  } catch {
-    return { isConnected: false, isGroupOwner: false, groupOwnerAddress: '' };
-  }
-}
-
-/**
- * Listens for discovered Wi-Fi Direct peers.
- */
-export function subscribeWifiDirectPeers(callback: (devices: WifiP2pPeer[]) => void): () => void {
-  if (!eventEmitter) return () => {};
-  const sub = eventEmitter.addListener('onPeersChanged', (event: any) => {
-    callback(event?.devices || []);
+export function subscribeP2pConnection(
+  cb: (info: WifiP2pInfo) => void,
+): EmitterSubscription | null {
+  if (Platform.OS !== 'android' || !P2pNative) return null;
+  return DeviceEventEmitter.addListener('onConnectionChanged', info => {
+    cb(normalizeInfo(info));
   });
-  return () => sub.remove();
 }
 
-/**
- * Listens for Wi-Fi Direct connection state changes.
- */
-export function subscribeWifiDirectConnection(
-  callback: (info: WifiP2pConnectionInfo) => void,
-): () => void {
-  if (!eventEmitter) return () => {};
-  const sub = eventEmitter.addListener('onConnectionChanged', (event: any) => {
-    callback(event as WifiP2pConnectionInfo);
+export async function connectP2pPeer(deviceAddress: string): Promise<void> {
+  if (Platform.OS !== 'android' || !P2pNative) return;
+  try {
+    await P2pNative.stopPeerDiscovery();
+  } catch {}
+  await P2pNative.connect(deviceAddress);
+}
+
+export async function cancelP2pConnect(): Promise<void> {
+  if (Platform.OS !== 'android' || !P2pNative) return;
+  try {
+    await P2pNative.cancelConnect();
+  } catch {}
+}
+
+export function waitForGroupOwnerIP(timeoutMs = 20000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let sub: EmitterSubscription | null = null;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let resolved = false;
+
+    function cleanup() {
+      resolved = true;
+      clearTimeout(timer);
+      if (pollTimer) clearInterval(pollTimer);
+      sub?.remove();
+    }
+
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(
+        new Error(
+          'WiFi Direct connection timed out. Make sure Wi-Fi & Location are ON and accept any connection prompt on the other phone.',
+        ),
+      );
+    }, timeoutMs);
+
+    function tryResolve(info: WifiP2pInfo) {
+      if (resolved) return;
+      const ip =
+        typeof info?.groupOwnerAddress === 'string'
+          ? info.groupOwnerAddress
+          : info?.groupOwnerAddress?.hostAddress;
+      if (info?.groupFormed && ip && ip !== '0.0.0.0') {
+        cleanup();
+        resolve(ip);
+      }
+    }
+
+    sub = subscribeP2pConnection(tryResolve);
+
+    // Active polling fallback every 500ms
+    pollTimer = setInterval(() => {
+      if (resolved) return;
+      getConnectionInfo()
+        .then(tryResolve)
+        .catch(() => {});
+    }, 500);
+
+    getConnectionInfo()
+      .then(tryResolve)
+      .catch(() => {});
   });
-  return () => sub.remove();
+}
+
+export async function getConnectionInfo(): Promise<WifiP2pInfo> {
+  if (Platform.OS !== 'android' || !P2pNative) {
+    return { isConnected: false, isGroupOwner: false, groupFormed: false };
+  }
+  try {
+    const raw = await P2pNative.getConnectionInfo();
+    return normalizeInfo(raw);
+  } catch {
+    return { isConnected: false, isGroupOwner: false, groupFormed: false };
+  }
+}
+
+export async function createP2pGroup(): Promise<boolean> {
+  if (Platform.OS !== 'android' || !P2pNative) return false;
+  try {
+    await P2pNative.createGroup();
+    return true;
+  } catch (e) {
+    console.warn('[WifiDirect] createGroup error:', e);
+    return false;
+  }
+}
+
+export async function removeP2pGroup(): Promise<void> {
+  if (Platform.OS !== 'android' || !P2pNative) return;
+  try {
+    await P2pNative.removeGroup();
+  } catch {}
+}
+
+export async function setP2pDeviceName(name: string): Promise<boolean> {
+  if (Platform.OS !== 'android' || !P2pNative?.setDeviceName) return false;
+  try {
+    return await P2pNative.setDeviceName(name);
+  } catch {
+    return false;
+  }
 }

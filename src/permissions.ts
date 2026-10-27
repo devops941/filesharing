@@ -1,12 +1,9 @@
 import { PermissionsAndroid, Platform } from 'react-native';
 
-export async function requestPermissions(forAction: 'send' | 'receive' = 'send'): Promise<boolean> {
+export async function requestPermissions(_forAction: 'send' | 'receive' = 'send'): Promise<boolean> {
   if (Platform.OS !== 'android') return true;
 
   const perms: string[] = [];
-  if (forAction === 'send') {
-    perms.push(PermissionsAndroid.PERMISSIONS.CAMERA);
-  }
 
   // Location is required for Wi-Fi Direct peer discovery on Android
   perms.push(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);

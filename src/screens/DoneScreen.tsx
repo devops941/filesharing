@@ -4,80 +4,94 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
+  StatusBar,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../App';
 
-type Props = NativeStackScreenProps<RootStackParamList, 'Done'>;
-
+// Quick Share Light Theme Palette
 const C = {
-  bg: '#0F1117',
-  surface: '#1A1C24',
-  surface2: '#22242E',
-  primary: '#4ADE80',
-  primaryBg: '#052E16',
-  accent: '#818CF8',
-  text: '#E2E4EE',
-  textSub: '#888BA0',
-  textDim: '#4E5068',
-  border: '#252830',
-  red: '#F87171',
+  bg: '#F8FAFC',
+  surface: '#FFFFFF',
+  surface2: '#F1F5F9',
+  surfaceCard: '#FFFFFF',
+  primary: '#0284C7', // Quick Share Sky Blue
+  primaryGlow: 'rgba(2, 132, 199, 0.12)',
+  accent: '#6366F1',
+  success: '#059669', // Mint Green
+  successGlow: 'rgba(5, 150, 105, 0.12)',
+  text: '#0F172A',
+  textSub: '#475569',
+  textDim: '#94A3B8',
+  border: '#E2E8F0',
+  borderHighlight: 'rgba(5, 150, 105, 0.35)',
+  red: '#DC2626',
 };
+
+type Props = NativeStackScreenProps<RootStackParamList, 'Done'>;
 
 export default function DoneScreen({ navigation, route }: Props) {
   const { filePath, verified } = route.params;
 
   return (
     <SafeAreaView style={styles.container}>
-      {/* Status circle */}
-      <View style={[styles.statusCircle, verified ? styles.statusCircleVerified : styles.statusCircleUnverified]}>
-        <Text style={[styles.statusIcon, verified ? styles.statusIconVerified : styles.statusIconUnverified]}>
-          {verified ? '✓' : '!'}
+      <StatusBar barStyle="dark-content" />
+
+      <View style={styles.contentWrap}>
+        {/* Status circle checkmark */}
+        <View style={styles.statusGlow}>
+          <View style={[styles.statusCircle, verified ? styles.statusCircleVerified : styles.statusCircleUnverified]}>
+            <Text style={[styles.statusIcon, verified ? styles.statusIconVerified : styles.statusIconUnverified]}>
+              {verified ? '✓' : '!'}
+            </Text>
+          </View>
+        </View>
+
+        {/* Title */}
+        <Text style={styles.title}>
+          {verified ? 'Transfer Complete' : 'Transfer Finished'}
         </Text>
+        <Text style={styles.subtitle}>
+          Files shared successfully via Quick Share
+        </Text>
+
+        {/* File count chip */}
+        {(route.params.fileCount ?? 1) > 1 && (
+          <View style={styles.fileCountChip}>
+            <Text style={styles.fileCountText}>
+              {route.params.fileCount} files transferred
+            </Text>
+          </View>
+        )}
+
+        {/* Saved location card */}
+        {filePath ? (
+          <View style={styles.pathCard}>
+            <Text style={styles.pathLabel}>Saved Location</Text>
+            <Text style={styles.pathText} numberOfLines={2}>
+              {filePath}
+            </Text>
+          </View>
+        ) : null}
       </View>
 
-      {/* Title */}
-      <Text style={styles.title}>
-        {verified ? 'Transfer Complete' : 'Transfer Done'}
-      </Text>
+      {/* Action buttons */}
+      <View style={styles.btnBlock}>
+        <TouchableOpacity
+          style={styles.doneBtn}
+          onPress={() => navigation.navigate('Home')}
+          activeOpacity={0.85}>
+          <Text style={styles.doneBtnText}>Done</Text>
+        </TouchableOpacity>
 
-      {/* File count chip */}
-      {(route.params.fileCount ?? 1) > 1 && (
-        <View style={styles.fileCountChip}>
-          <Text style={styles.fileCountText}>{route.params.fileCount} files transferred</Text>
-        </View>
-      )}
-
-      {/* Verified badge */}
-      {verified && (
-        <Text style={styles.verifiedBadge}>End-to-end verified ✓</Text>
-      )}
-
-      {/* File path */}
-      {filePath ? (
-        <Text style={styles.path} numberOfLines={3}>
-          Saved to: {filePath}
-        </Text>
-      ) : null}
-
-      <View style={styles.spacer} />
-
-      {/* Done button */}
-      <TouchableOpacity
-        style={styles.doneBtn}
-        onPress={() => navigation.navigate('Home')}
-        activeOpacity={0.85}>
-        <Text style={styles.doneBtnText}>Done</Text>
-      </TouchableOpacity>
-
-      {/* Send Another button */}
-      <TouchableOpacity
-        style={styles.sendAnotherBtn}
-        onPress={() => navigation.navigate('Send')}
-        activeOpacity={0.85}>
-        <Text style={styles.sendAnotherText}>Send Another</Text>
-      </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.sendAnotherBtn}
+          onPress={() => navigation.navigate('Send')}
+          activeOpacity={0.85}>
+          <Text style={styles.sendAnotherText}>Send More Files</Text>
+        </TouchableOpacity>
+      </View>
     </SafeAreaView>
   );
 }
@@ -85,99 +99,145 @@ export default function DoneScreen({ navigation, route }: Props) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
     backgroundColor: C.bg,
-    padding: 24,
+    paddingHorizontal: 24,
+    paddingVertical: 20,
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
-  statusCircle: {
+  contentWrap: {
+    alignItems: 'center',
+    paddingTop: 36,
+    width: '100%',
+  },
+  statusGlow: {
     width: 120,
     height: 120,
     borderRadius: 60,
-    borderWidth: 3,
+    backgroundColor: C.successGlow,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 28,
+    marginBottom: 24,
+  },
+  statusCircle: {
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    borderWidth: 2.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: C.success,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 10,
+    elevation: 4,
   },
   statusCircleVerified: {
-    backgroundColor: C.primaryBg,
-    borderColor: C.primary,
+    backgroundColor: '#ECFDF5',
+    borderColor: C.success,
   },
   statusCircleUnverified: {
-    backgroundColor: C.surface2,
+    backgroundColor: '#FEF2F2',
     borderColor: C.red,
   },
   statusIcon: {
-    fontSize: 48,
-    fontWeight: '800',
+    fontSize: 40,
+    fontWeight: '900',
   },
   statusIconVerified: {
-    color: C.primary,
+    color: C.success,
   },
   statusIconUnverified: {
     color: C.red,
   },
   title: {
     fontSize: 26,
-    fontWeight: '700',
+    fontWeight: '800',
     color: C.text,
-    marginBottom: 16,
+    marginBottom: 6,
     textAlign: 'center',
-    letterSpacing: -0.3,
+    letterSpacing: -0.4,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: C.textSub,
+    textAlign: 'center',
+    marginBottom: 20,
   },
   fileCountChip: {
-    backgroundColor: C.primaryBg,
+    backgroundColor: 'rgba(5, 150, 105, 0.08)',
+    borderWidth: 1,
+    borderColor: 'rgba(5, 150, 105, 0.25)',
     borderRadius: 100,
     paddingHorizontal: 16,
     paddingVertical: 6,
-    marginBottom: 10,
+    marginBottom: 20,
   },
   fileCountText: {
-    color: C.primary,
+    color: C.success,
     fontSize: 13,
-    fontWeight: '600',
+    fontWeight: '700',
   },
-  verifiedBadge: {
-    color: C.primary,
-    fontSize: 13,
-    fontWeight: '500',
-    marginBottom: 10,
+  pathCard: {
+    backgroundColor: C.surface,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 16,
+    padding: 16,
+    width: '100%',
+    maxWidth: 340,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 2,
   },
-  path: {
+  pathLabel: {
+    fontSize: 11,
+    fontWeight: '700',
     color: C.textDim,
-    fontSize: 12,
-    textAlign: 'center',
-    maxWidth: 300,
-    marginTop: 4,
+    letterSpacing: 0.8,
+    marginBottom: 4,
   },
-  spacer: {
-    height: 40,
+  pathText: {
+    fontSize: 13,
+    color: C.textSub,
+    lineHeight: 18,
+  },
+  btnBlock: {
+    width: '100%',
+    gap: 12,
+    paddingBottom: 8,
   },
   doneBtn: {
     width: '100%',
     backgroundColor: C.primary,
-    borderRadius: 100,
-    padding: 18,
+    borderRadius: 16,
+    paddingVertical: 18,
     alignItems: 'center',
-    marginBottom: 12,
+    shadowColor: C.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 12,
+    elevation: 4,
   },
   doneBtnText: {
-    color: '#052E16',
-    fontWeight: '700',
+    color: '#FFFFFF',
+    fontWeight: '800',
     fontSize: 16,
   },
   sendAnotherBtn: {
     width: '100%',
-    backgroundColor: C.surface2,
-    borderRadius: 100,
-    padding: 18,
-    alignItems: 'center',
+    backgroundColor: C.surface,
     borderWidth: 1,
     borderColor: C.border,
+    borderRadius: 16,
+    paddingVertical: 16,
+    alignItems: 'center',
   },
   sendAnotherText: {
-    color: C.text,
-    fontWeight: '600',
-    fontSize: 16,
+    color: C.textSub,
+    fontWeight: '700',
+    fontSize: 15,
   },
 });

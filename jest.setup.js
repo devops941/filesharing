@@ -90,10 +90,10 @@ jest.mock('react-native-svg', () => {
   const React = require('react');
   return {
     __esModule: true,
-    default: (props: any) => React.createElement('Svg', props),
-    Circle: (props: any) => React.createElement('Circle', props),
-    Rect: (props: any) => React.createElement('Rect', props),
-    Path: (props: any) => React.createElement('Path', props),
+    default: props => React.createElement('Svg', props),
+    Circle: props => React.createElement('Circle', props),
+    Rect: props => React.createElement('Rect', props),
+    Path: props => React.createElement('Path', props),
   };
 });
 
@@ -109,4 +109,21 @@ jest.mock('expo-modules-core', () => ({
   },
   NativeModulesProxy: {},
   Platform: { OS: 'android' },
+}));
+
+jest.mock('react-native-wifi-p2p', () => ({
+  initialize: jest.fn().mockResolvedValue(true),
+  startDiscoveringPeers: jest.fn().mockResolvedValue(undefined),
+  stopDiscoveringPeers: jest.fn().mockResolvedValue(undefined),
+  subscribeOnPeersUpdates: jest.fn().mockReturnValue({ remove: jest.fn() }),
+  subscribeOnConnectionInfoUpdates: jest.fn().mockReturnValue({ remove: jest.fn() }),
+  connect: jest.fn().mockResolvedValue(undefined),
+  connectWithConfig: jest.fn().mockResolvedValue(undefined),
+  cancelConnect: jest.fn().mockResolvedValue(undefined),
+  createGroup: jest.fn().mockResolvedValue(true),
+  removeGroup: jest.fn().mockResolvedValue(undefined),
+  getConnectionInfo: jest.fn().mockResolvedValue({
+    groupFormed: false,
+    groupOwnerAddress: { hostAddress: '' },
+  }),
 }));

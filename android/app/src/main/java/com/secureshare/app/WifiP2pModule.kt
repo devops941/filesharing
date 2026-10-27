@@ -201,6 +201,37 @@ class WifiP2pModule(private val reactContext: ReactApplicationContext) :
     }
 
     @ReactMethod
+    fun getLocalIP(promise: Promise) {
+        try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
+            val ips = Arguments.createArray()
+            if (interfaces != null) {
+                while (interfaces.hasMoreElements()) {
+                    val iface = interfaces.nextElement()
+                    if (iface.isLoopback || !iface.isUp) continue
+                    val addresses = iface.inetAddresses
+                    while (addresses.hasMoreElements()) {
+                        val addr = addresses.nextElement()
+                        if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
+                            val host = addr.hostAddress
+                            if (host != null && !host.startsWith("127.") && !host.startsWith("169.254.")) {
+                                val map = Arguments.createMap().apply {
+                                    putString("name", iface.name)
+                                    putString("ip", host)
+                                }
+                                ips.pushMap(map)
+                            }
+                        }
+                    }
+                }
+            }
+            promise.resolve(ips)
+        } catch (e: Exception) {
+            promise.reject("ERR_IP", e.message)
+        }
+    }
+
+    @ReactMethod
     fun discoverPeers(promise: Promise) {
         val mgr = manager ?: run {
             promise.reject("ERR_NOT_SUPPORTED", "Wi-Fi Direct not supported on this device")
@@ -218,13 +249,77 @@ class WifiP2pModule(private val reactContext: ReactApplicationContext) :
                 }
 
                 override fun onFailure(reason: Int) {
-                    promise.reject("ERR_DISCOVERY_FAILED", "Discover peers failed: $reason")
+                    if (reason == WifiP2pManager.BUSY) {
+                        // Already discovering or radio is busy — treat as active
+                        promise.resolve(true)
+                    } else {
+                        promise.reject("ERR_DISCOVERY_FAILED", "Discover peers failed: $reason")
+                    }
                 }
             })
         } catch (e: SecurityException) {
             promise.reject("ERR_PERMISSION", "Missing location or nearby permission: ${e.message}")
         } catch (e: Exception) {
             promise.reject("ERR_EXCEPTION", e.message)
+        }
+    }
+
+    @ReactMethod
+    fun getPeers(promise: Promise) {
+        val mgr = manager ?: run {
+            promise.resolve(Arguments.createArray())
+            return
+        }
+        val ch = channel ?: run {
+            promise.resolve(Arguments.createArray())
+            return
+        }
+        try {
+            mgr.requestPeers(ch) { peers: WifiP2pDeviceList? ->
+                val deviceList = Arguments.createArray()
+                peers?.deviceList?.forEach { device ->
+                    val map = Arguments.createMap().apply {
+                        putString("deviceName", device.deviceName ?: "")
+                        putString("deviceAddress", device.deviceAddress ?: "")
+                        putString("primaryDeviceType", device.primaryDeviceType ?: "")
+                        putInt("status", device.status)
+                    }
+                    deviceList.pushMap(map)
+                }
+                promise.resolve(deviceList)
+            }
+        } catch (e: Exception) {
+            promise.resolve(Arguments.createArray())
+        }
+    }
+
+    @ReactMethod
+    fun setDeviceName(name: String, promise: Promise) {
+        val mgr = manager ?: run {
+            promise.resolve(false)
+            return
+        }
+        val ch = channel ?: run {
+            promise.resolve(false)
+            return
+        }
+        try {
+            val method = mgr.javaClass.getMethod(
+                "setDeviceName",
+                WifiP2pManager.Channel::class.java,
+                String::class.java,
+                WifiP2pManager.ActionListener::class.java
+            )
+            method.invoke(mgr, ch, name, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    promise.resolve(true)
+                }
+                override fun onFailure(reason: Int) {
+                    promise.resolve(false)
+                }
+            })
+        } catch (e: Exception) {
+            promise.resolve(false)
         }
     }
 
