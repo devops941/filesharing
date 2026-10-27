@@ -42,12 +42,15 @@ function writeAsync(socket: ReturnType<typeof TcpSocket.createConnection>, data:
 function encodeOffer(
   file: PickedFile,
   header: Uint8Array,
-  _sharedTx?: Uint8Array,
+  fileIndex?: number,
+  fileTotal?: number,
 ): Uint8Array {
   const meta = JSON.stringify({
     fileName: file.name,
     size: file.size,
     mimeType: file.type ?? 'application/octet-stream',
+    fileIndex: fileIndex !== undefined ? fileIndex + 1 : 1,
+    fileTotal: fileTotal ?? 1,
   });
   return Buffer.concat([Buffer.from(header), Buffer.from(meta, 'utf8')]);
 }
@@ -219,6 +222,9 @@ export async function sendFiles(
         destroyed = true;
         clearTimeout(connectTimeout);
         abortWaiters();
+        try {
+          socket.write(frame(T.CANCEL));
+        } catch {}
         socket.destroy();
         ui.cancelled();
         resolveTransfer();
@@ -325,7 +331,7 @@ export async function sendFiles(
       if (!savedKeys) return;
       doneReceived = false;
       enc = encryptor(savedKeys.sharedTx);
-      socket.write(frame(T.OFFER, encodeOffer(files[idx], enc.header, savedKeys.sharedTx)));
+      socket.write(frame(T.OFFER, encodeOffer(files[idx], enc.header, idx, files.length)));
     }
 
     async function streamFile(idx: number) {

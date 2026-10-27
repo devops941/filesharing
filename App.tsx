@@ -47,10 +47,8 @@ export default function App() {
       <Stack.Navigator
         initialRouteName="Home"
         screenOptions={{
-          headerStyle: { backgroundColor: '#0f172a' },
-          headerTintColor: '#f8fafc',
-          headerTitleStyle: { fontWeight: '700' },
-          contentStyle: { backgroundColor: '#0f172a' },
+          headerShown: false,
+          contentStyle: { backgroundColor: '#F8FAFC' },
         }}>
         <Stack.Screen
           name="Home"

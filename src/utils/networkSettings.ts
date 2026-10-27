@@ -1,4 +1,4 @@
-import { Linking, Platform } from 'react-native';
+import { Linking, Platform, NativeModules } from 'react-native';
 import TcpSocket from 'react-native-tcp-socket';
 
 /**
@@ -20,6 +20,14 @@ export function isHotspotIP(ip?: string | null): boolean {
 }
 
 /**
+ * Checks whether an IP address belongs specifically to a Wi-Fi Direct virtual interface.
+ */
+export function isWifiDirectIP(ip?: string | null): boolean {
+  if (!ip) return false;
+  return ip.startsWith('192.168.49.');
+}
+
+/**
  * Checks whether an IP address is a private IPv4 LAN address (RFC 1918).
  */
 export function isLanIP(ip?: string | null): boolean {
@@ -33,11 +41,47 @@ export function isLanIP(ip?: string | null): boolean {
   return false;
 }
 
+export type NetworkInterfaceInfo = {
+  name: string;
+  ip: string;
+};
+
 /**
- * Rapidly detects local device LAN IP by probing standard local gateway / DNS sockets.
- * Does not create server sockets (avoiding native Android event emitter bugs).
+ * Queries network interfaces directly from native OS (Android NetworkInterface).
  */
-export function detectLocalIP(): Promise<string> {
+export async function getDeviceInterfaces(): Promise<NetworkInterfaceInfo[]> {
+  if (Platform.OS === 'android') {
+    try {
+      if (NativeModules.WifiP2pModule?.getLocalIP) {
+        const list = await NativeModules.WifiP2pModule.getLocalIP();
+        if (Array.isArray(list) && list.length > 0) {
+          return list;
+        }
+      }
+    } catch {}
+  }
+  return [];
+}
+
+/**
+ * Rapidly detects local device LAN IP via native network interfaces or local socket probing.
+ */
+export async function detectLocalIP(): Promise<string> {
+  // Method 1: Check native interfaces directly (instant 1ms check)
+  const ifaces = await getDeviceInterfaces();
+  if (ifaces.length > 0) {
+    // Prioritize standard Wi-Fi (wlan0) and Hotspot (ap0 / wlan0-0) over p2p
+    const nonP2p = ifaces.filter(i => isLanIP(i.ip) && !isWifiDirectIP(i.ip));
+    if (nonP2p.length > 0) {
+      // Find wlan0 or ap0
+      const wlan = nonP2p.find(i => i.name.startsWith('wlan') || i.name.startsWith('ap') || i.name.startsWith('eth'));
+      return wlan?.ip || nonP2p[0].ip;
+    }
+    const anyLan = ifaces.find(i => isLanIP(i.ip));
+    if (anyLan) return anyLan.ip;
+  }
+
+  // Method 2: Fast local socket probing fallback
   return new Promise(resolve => {
     let resolved = false;
 
@@ -53,7 +97,7 @@ export function detectLocalIP(): Promise<string> {
         resolved = true;
         resolve('');
       }
-    }, 2500);
+    }, 1500);
 
     const probeHosts: [string, number][] = [
       ['192.168.49.1', 47800],
@@ -63,8 +107,6 @@ export function detectLocalIP(): Promise<string> {
       ['10.42.0.1', 47800],
       ['1.1.1.1', 80],
       ['8.8.8.8', 53],
-      ['1.1.1.1', 53],
-      ['8.8.8.8', 443],
       ['192.168.1.1', 80],
       ['192.168.0.1', 80],
       ['10.0.0.1', 80],

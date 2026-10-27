@@ -5,17 +5,17 @@ import {
   Text,
   TouchableOpacity,
   StyleSheet,
-  SafeAreaView,
   Alert,
   ActivityIndicator,
   Modal,
   ScrollView,
   StatusBar,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
-import { CameraView, useCameraPermissions } from 'expo-camera';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../App';
+import { startScan, stopScan } from '../net/discovery';
 import type { Device } from '../net/discovery';
 import { sendFiles } from '../net/sender';
 import type { PickedFile } from '../net/sender';
@@ -28,28 +28,33 @@ import {
 import { registerTransferCancel } from '../net/activeTransfer';
 import { requestPermissions } from '../permissions';
 import {
-  startWifiDirectDiscovery,
-  stopWifiDirectDiscovery,
-  subscribeWifiDirectPeers,
-  connectWifiDirect,
-  cancelConnectWifiDirect,
-  removeWifiDirectGroup,
-  subscribeWifiDirectConnection,
-  getWifiDirectConnectionInfo,
+  initWifiDirect,
+  startP2pDiscovery,
+  stopP2pDiscovery,
+  subscribeP2pPeers,
+  connectP2pPeer,
+  cancelP2pConnect,
+  removeP2pGroup,
+  waitForGroupOwnerIP,
 } from '../net/wifiDirect';
+import { PORT } from '../config';
 
+// Quick Share Theme Palette (Light)
 const C = {
-  bg: '#0F1117',
-  surface: '#1A1C24',
-  surface2: '#22242E',
-  primary: '#4ADE80',
-  primaryBg: '#052E16',
-  accent: '#818CF8',
-  text: '#E2E4EE',
-  textSub: '#888BA0',
-  textDim: '#4E5068',
-  border: '#252830',
-  red: '#F87171',
+  bg: '#F8FAFC',
+  surface: '#FFFFFF',
+  surface2: '#F1F5F9',
+  surfaceCard: '#FFFFFF',
+  primary: '#0284C7', // Quick Share Sky Blue
+  primaryGlow: 'rgba(2, 132, 199, 0.12)',
+  accent: '#6366F1', // Electric Indigo
+  success: '#059669',
+  text: '#0F172A',
+  textSub: '#475569',
+  textDim: '#94A3B8',
+  border: '#E2E8F0',
+  borderHighlight: 'rgba(2, 132, 199, 0.4)',
+  red: '#DC2626',
 };
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Send'>;
@@ -58,48 +63,33 @@ export default function SendScreen({ navigation }: Props) {
   const [files, setFiles] = useState<PickedFile[]>([]);
   const [devices, setDevices] = useState<Device[]>([]);
   const [scanning, setScanning] = useState(false);
-  const [showQrScanner, setShowQrScanner] = useState(false);
-  const [qrScanned, setQrScanned] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [connectingDevice, setConnectingDevice] = useState<Device | null>(null);
   const cancelConnectionRef = useRef<(() => void) | null>(null);
-  const [cameraPermission, requestCameraPermission] = useCameraPermissions();
-  const scanLineAnim = useRef(new Animated.Value(0)).current;
 
+  // Radar pulse rings
   const ring1 = useRef(new Animated.Value(0)).current;
   const ring2 = useRef(new Animated.Value(0)).current;
   const ring3 = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
-    if (showQrScanner) {
-      Animated.loop(
-        Animated.sequence([
-          Animated.timing(scanLineAnim, { toValue: 1, duration: 1600, useNativeDriver: true }),
-          Animated.timing(scanLineAnim, { toValue: 0, duration: 1600, useNativeDriver: true }),
-        ]),
-      ).start();
-    } else {
-      scanLineAnim.setValue(0);
-    }
-  }, [showQrScanner, scanLineAnim]);
-
-  useEffect(() => {
-    const createRingAnim = (val: Animated.Value, delay: number) =>
+    const createRippleAnim = (val: Animated.Value, delay: number) =>
       Animated.loop(
         Animated.sequence([
           Animated.delay(delay),
-          Animated.parallel([
-            Animated.timing(val, { toValue: 1, duration: 2400, useNativeDriver: true }),
-          ]),
+          Animated.timing(val, { toValue: 1, duration: 2600, useNativeDriver: true }),
           Animated.timing(val, { toValue: 0, duration: 0, useNativeDriver: true }),
         ]),
       );
-    const a1 = createRingAnim(ring1, 0);
-    const a2 = createRingAnim(ring2, 800);
-    const a3 = createRingAnim(ring3, 1600);
+
+    const a1 = createRippleAnim(ring1, 0);
+    const a2 = createRippleAnim(ring2, 850);
+    const a3 = createRippleAnim(ring3, 1700);
+
     a1.start();
     a2.start();
     a3.start();
+
     return () => {
       a1.stop();
       a2.stop();
@@ -108,31 +98,70 @@ export default function SendScreen({ navigation }: Props) {
   }, [ring1, ring2, ring3]);
 
   useEffect(() => {
-    let unsubP2p = () => {};
     let mounted = true;
+    let p2pSub: { remove(): void } | null = null;
 
-    requestPermissions('send').then(() => {
+    requestPermissions('send').then(async () => {
       if (!mounted) return;
       setScanning(true);
-      startWifiDirectDiscovery().catch(() => {});
-      unsubP2p = subscribeWifiDirectPeers(peers => {
+
+      // mDNS peer scan and active subnet probe
+      startScan(d => {
         if (!mounted) return;
-        setDevices(
-          peers.map(p => ({
-            name: p.deviceName || 'Nearby Device',
-            ip: '',
-            port: 47800,
-            isWifiDirect: true,
-            p2pAddress: p.deviceAddress,
-          })),
-        );
+        setDevices(prev => {
+          const existing = prev.find(x => x.ip === d.ip);
+          if (existing) {
+            if (existing.name.startsWith('Nearby Device') && !d.name.startsWith('Nearby Device')) {
+              return prev.map(x => (x.ip === d.ip ? { ...x, name: d.name } : x));
+            }
+            return prev;
+          }
+          const filtered = prev.filter(
+            x => !(x.isWifiDirect && x.name.toLowerCase() === d.name.toLowerCase()),
+          );
+          return [d, ...filtered];
+        });
+      });
+
+      // Wi-Fi Direct peer discovery
+      await initWifiDirect();
+      await startP2pDiscovery().catch(() => {});
+      p2pSub = subscribeP2pPeers(peers => {
+        if (!mounted) return;
+        setDevices(prev => {
+          const mDnsDevices = prev.filter(d => !d.isWifiDirect);
+          const p2pDevices: Device[] = peers
+            .filter(
+              p =>
+                !mDnsDevices.some(
+                  m => m.name.toLowerCase() === (p.deviceName || '').toLowerCase(),
+                ),
+            )
+            .map(p => ({
+              name: p.deviceName || 'Nearby Device',
+              ip: '',
+              port: PORT,
+              isWifiDirect: true,
+              p2pAddress: p.deviceAddress,
+            }));
+          return [...mDnsDevices, ...p2pDevices];
+        });
       });
     });
 
+    // Keep Wi-Fi Direct discovery actively pinging so Android radio doesn't sleep
+    const refreshTimer = setInterval(() => {
+      if (!mounted) return;
+      startP2pDiscovery().catch(() => {});
+    }, 4000);
+
     return () => {
       mounted = false;
-      stopWifiDirectDiscovery().catch(() => {});
-      unsubP2p();
+      clearInterval(refreshTimer);
+      stopScan();
+      stopP2pDiscovery().catch(() => {});
+      p2pSub?.remove();
+      removeP2pGroup().catch(() => {});
       setScanning(false);
     };
   }, []);
@@ -157,112 +186,52 @@ export default function SendScreen({ navigation }: Props) {
     }
   }
 
-  async function openQrScanner() {
-    if (!cameraPermission?.granted) {
-      const result = await requestCameraPermission();
-      if (!result.granted) {
-        Alert.alert('Camera permission required to scan QR code');
-        return;
-      }
-    }
-    setQrScanned(false);
-    setShowQrScanner(true);
-  }
-
-  function handleQrScanned({ data }: { data: string }) {
-    if (qrScanned) return;
-    setQrScanned(true);
-    setShowQrScanner(false);
-    try {
-      const parsed = JSON.parse(data) as { ip: string; port: number; name: string };
-      if (!parsed.ip || !parsed.port) throw new Error('Invalid QR');
-      const device: Device = {
-        name: parsed.name ?? 'Scanned Device',
-        ip: parsed.ip,
-        port: parsed.port,
-      };
-      connectToDevice(device);
-    } catch {
-      Alert.alert('Invalid QR code', 'Could not read device info from QR code.');
-    }
-  }
-
   async function connectToDevice(device: Device) {
     if (files.length === 0) {
-      Alert.alert('Pick files first');
+      Alert.alert('No files selected', 'Please tap the file box above to select files first.');
       return;
     }
 
+    // Direct Wi-Fi Direct flow
     if (device.isWifiDirect && device.p2pAddress) {
       setConnectingDevice(device);
       setConnecting(true);
-
       let cancelled = false;
-      let handled = false;
-      let connectionSub: (() => void) | null = null;
 
       cancelConnectionRef.current = () => {
         cancelled = true;
-        cancelConnectWifiDirect().catch(() => {});
-        removeWifiDirectGroup().catch(() => {});
-        connectionSub?.();
+        cancelP2pConnect().catch(() => {});
         setConnecting(false);
       };
 
-      connectionSub = subscribeWifiDirectConnection(async info => {
-        if (cancelled || handled) return;
-        if (info.isConnected) {
-          handled = true;
-          connectionSub?.();
-          const targetIp = info.groupOwnerAddress || '192.168.49.1';
-          const p2pDevice: Device = {
-            ...device,
-            ip: targetIp,
-          };
-          startSendProcess(p2pDevice, true);
-        }
-      });
+      try {
+        await connectP2pPeer(device.p2pAddress);
+        const ownerIp = await waitForGroupOwnerIP(20000);
+        if (cancelled) return;
 
-      const ok = await connectWifiDirect(device.p2pAddress);
-      if (!ok && !cancelled) {
+        const p2pDevice: Device = { ...device, ip: ownerIp, port: PORT };
+        startSendProcess(p2pDevice, true);
+      } catch (err: any) {
+        if (cancelled) return;
         setConnecting(false);
         cancelConnectionRef.current = null;
-        connectionSub?.();
         Alert.alert(
-          'Quick Share Failed',
-          'Make sure the receiver is on the Receive screen and accepts the connection prompt.',
+          'Quick Share Connection',
+          err?.message ?? 'Could not connect. Make sure the receiver is on the Quick Share screen.',
         );
-        return;
       }
-
-      // Fallback check after 2s if onConnectionChanged fired before subscription was active
-      setTimeout(async () => {
-        if (!handled && !cancelled) {
-          const info = await getWifiDirectConnectionInfo();
-          if (info.isConnected && !handled && !cancelled) {
-            handled = true;
-            connectionSub?.();
-            const targetIp = info.groupOwnerAddress || '192.168.49.1';
-            const p2pDevice: Device = {
-              ...device,
-              ip: targetIp,
-            };
-            startSendProcess(p2pDevice, true);
-          }
-        }
-      }, 2000);
-
       return;
     }
 
+    // Direct LAN flow
     startSendProcess(device, false);
   }
 
   async function startSendProcess(device: Device, isP2p = false) {
     const transferParams = {
-      total: totalSize,
+      total: files[0]?.size ?? 0,
       received: 0,
-      fileName: files[0].name,
+      fileName: files[0]?.name ?? '',
       fileIndex: 1,
       fileTotal: files.length,
     };
@@ -272,59 +241,65 @@ export default function SendScreen({ navigation }: Props) {
     const cancelRef = { cancel: () => {} };
     cancelConnectionRef.current = () => {
       cancelRef.cancel();
-      if (isP2p) removeWifiDirectGroup().catch(() => {});
+      if (isP2p) removeP2pGroup().catch(() => {});
     };
     registerTransferCancel(() => {
       cancelRef.cancel();
-      if (isP2p) removeWifiDirectGroup().catch(() => {});
+      if (isP2p) removeP2pGroup().catch(() => {});
     });
-    await sendFiles(device, files, {
-      confirmCode: code =>
-        new Promise(resolve => {
-          setConnecting(false);
-          navigation.navigate('Pairing', {
-            code,
-            onConfirm: resolve,
-            transferParams,
+
+    await sendFiles(
+      device,
+      files,
+      {
+        confirmCode: code =>
+          new Promise(resolve => {
+            setConnecting(false);
+            navigation.navigate('Pairing', {
+              code,
+              onConfirm: resolve,
+              transferParams,
+            });
+          }),
+        progress: (idx, sent, fileTotal) => {
+          navigation.navigate('Transfer', {
+            total: fileTotal,
+            received: sent,
+            fileIndex: idx + 1,
+            fileName: files[idx]?.name ?? '',
+            fileTotal: files.length,
           });
-        }),
-      progress: (idx, sent, fileTotal) => {
-        navigation.navigate('Transfer', {
-          total: fileTotal,
-          received: sent,
-          fileIndex: idx + 1,
-          fileName: files[idx]?.name ?? '',
-          fileTotal: files.length,
-        });
-        const pct = fileTotal > 0 ? Math.min(99, Math.round((sent / fileTotal) * 100)) : 0;
-        notifySending(files[idx]?.name ?? 'File', pct).catch(() => {});
+          const pct = fileTotal > 0 ? Math.min(99, Math.round((sent / fileTotal) * 100)) : 0;
+          notifySending(files[idx]?.name ?? 'File', pct).catch(() => {});
+        },
+        done: () => {
+          registerTransferCancel(null);
+          if (isP2p) removeP2pGroup().catch(() => {});
+          navigation.navigate('Done', { filePath: '', verified: true, fileCount: files.length });
+          notifyDone('sent', files.map(f => f.name)).catch(() => {});
+        },
+        rejected: (_idx, reason) => {
+          registerTransferCancel(null);
+          if (isP2p) removeP2pGroup().catch(() => {});
+          Alert.alert('Transfer Declined', reason);
+        },
+        error: msg => {
+          registerTransferCancel(null);
+          if (isP2p) removeP2pGroup().catch(() => {});
+          setConnecting(false);
+          notifyCancelled().catch(() => {});
+          Alert.alert('Connection Failed', msg);
+        },
+        cancelled: () => {
+          registerTransferCancel(null);
+          if (isP2p) removeP2pGroup().catch(() => {});
+          setConnecting(false);
+          cancelConnectionRef.current = null;
+          notifyCancelled().catch(() => {});
+        },
       },
-      done: () => {
-        registerTransferCancel(null);
-        if (isP2p) removeWifiDirectGroup().catch(() => {});
-        navigation.navigate('Done', { filePath: '', verified: true, fileCount: files.length });
-        notifyDone('sent', files.map(f => f.name)).catch(() => {});
-      },
-      rejected: (_idx, reason) => {
-        registerTransferCancel(null);
-        if (isP2p) removeWifiDirectGroup().catch(() => {});
-        Alert.alert('Rejected', reason);
-      },
-      error: msg => {
-        registerTransferCancel(null);
-        if (isP2p) removeWifiDirectGroup().catch(() => {});
-        setConnecting(false);
-        notifyCancelled().catch(() => {});
-        Alert.alert('Connection Failed', msg, [{ text: 'OK' }]);
-      },
-      cancelled: () => {
-        registerTransferCancel(null);
-        if (isP2p) removeWifiDirectGroup().catch(() => {});
-        setConnecting(false);
-        cancelConnectionRef.current = null;
-        notifyCancelled().catch(() => {});
-      },
-    }, cancelRef);
+      cancelRef,
+    );
     registerTransferCancel(null);
     setConnecting(false);
     cancelConnectionRef.current = null;
@@ -334,201 +309,168 @@ export default function SendScreen({ navigation }: Props) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle="dark-content" />
 
-      {/* Header */}
+      {/* Header bar */}
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>Share</Text>
+        <TouchableOpacity
+          style={styles.backBtn}
+          onPress={() => navigation.goBack()}
+          activeOpacity={0.7}>
+          <Text style={styles.backArrow}>‹</Text>
+        </TouchableOpacity>
+        <Text style={styles.headerTitle}>Quick Share</Text>
+        <View style={styles.headerRightPlaceholder} />
       </View>
 
       {/* File picker card */}
-      <TouchableOpacity onPress={pickFiles} style={styles.fileCard} activeOpacity={0.8}>
+      <TouchableOpacity onPress={pickFiles} style={styles.fileCard} activeOpacity={0.85}>
         {files.length === 0 ? (
           <View style={styles.fileCardEmpty}>
-            <Text style={styles.fileCardIcon}>📁</Text>
-            <Text style={styles.fileCardTitle}>Add files to share</Text>
-            <Text style={styles.fileCardSub}>Tap to pick files</Text>
+            <View style={styles.fileIconBubble}>
+              <Text style={styles.fileIconText}>📁</Text>
+            </View>
+            <View style={styles.fileCardTextWrap}>
+              <Text style={styles.fileCardTitle}>Select files to share</Text>
+              <Text style={styles.fileCardSub}>Photos, videos, and documents</Text>
+            </View>
+            <View style={styles.addBtnCircle}>
+              <Text style={styles.addBtnPlus}>+</Text>
+            </View>
           </View>
         ) : (
           <View style={styles.fileCardFilled}>
-            <View style={styles.fileCardFilledRow}>
-              <Text style={styles.fileCardTitle}>
-                {files.length} file{files.length > 1 ? 's' : ''} ready
-              </Text>
-              <Text style={styles.fileCardSub}>
-                {(totalSize / 1024 / 1024).toFixed(1)} MB · Tap to change
-              </Text>
+            <View style={styles.fileCardFilledHeader}>
+              <View>
+                <Text style={styles.fileCountTitle}>
+                  {files.length} {files.length === 1 ? 'file' : 'files'} selected
+                </Text>
+                <Text style={styles.fileSizeText}>
+                  {(totalSize / 1024 / 1024).toFixed(1)} MB total
+                </Text>
+              </View>
+              <View style={styles.changeBtnPill}>
+                <Text style={styles.changeBtnText}>Change</Text>
+              </View>
             </View>
-            {files.slice(0, 3).map((f, i) => (
-              <Text key={i} style={styles.fileRow} numberOfLines={1}>
-                📄 {f.name}
-              </Text>
-            ))}
-            {files.length > 3 && (
-              <Text style={styles.fileMore}>+{files.length - 3} more</Text>
-            )}
+            <View style={styles.fileChipsRow}>
+              {files.slice(0, 3).map((f, i) => (
+                <View key={i} style={styles.fileChip}>
+                  <Text style={styles.fileChipText} numberOfLines={1}>
+                    {f.name}
+                  </Text>
+                </View>
+              ))}
+              {files.length > 3 && (
+                <View style={styles.fileMoreChip}>
+                  <Text style={styles.fileMoreText}>+{files.length - 3}</Text>
+                </View>
+              )}
+            </View>
           </View>
         )}
       </TouchableOpacity>
 
-      {/* Nearby Devices section */}
-      <View style={styles.section}>
+      {/* Main Nearby Quick Share Section */}
+      <View style={styles.nearbySection}>
         <Text style={styles.sectionLabel}>NEARBY DEVICES</Text>
 
         <View style={styles.radarArea}>
-          {/* Radar pulse rings */}
-          <View style={styles.radar}>
-            {[ring1, ring2, ring3].map((anim, i) => (
-              <Animated.View
-                key={i}
-                style={[
-                  styles.radarRing,
-                  {
-                    opacity: anim.interpolate({
-                      inputRange: [0, 0.3, 1],
-                      outputRange: [0, 0.5, 0],
-                    }),
-                    transform: [
-                      {
-                        scale: anim.interpolate({
-                          inputRange: [0, 1],
-                          outputRange: [0.3, 1],
-                        }),
-                      },
-                    ],
-                  },
-                ]}
-              />
-            ))}
-            <View style={styles.radarCenter} />
-          </View>
+          {/* Subtle concentric ripple waves */}
+          {[ring1, ring2, ring3].map((anim, idx) => (
+            <Animated.View
+              key={idx}
+              style={[
+                styles.radarRipple,
+                {
+                  opacity: anim.interpolate({
+                    inputRange: [0, 0.3, 0.8, 1],
+                    outputRange: [0, 0.35, 0.12, 0],
+                  }),
+                  transform: [
+                    {
+                      scale: anim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0.35, 1.25],
+                      }),
+                    },
+                  ],
+                },
+              ]}
+            />
+          ))}
 
-          {/* Scanning status text */}
-          {scanning && devices.length === 0 && (
-            <Text style={styles.scanningText}>Looking for nearby devices...</Text>
-          )}
-
-          {/* Device cards — horizontal scroll */}
-          {devices.length > 0 && (
+          {/* Device list or scanning state */}
+          {devices.length === 0 ? (
+            <View style={styles.emptySearchContainer}>
+              <View style={styles.centerPulsingIcon}>
+                <ActivityIndicator color={C.primary} size="small" />
+              </View>
+              <Text style={styles.scanningNotice}>
+                {scanning ? 'Searching for nearby Quick Share devices...' : 'Ready to search'}
+              </Text>
+              <Text style={styles.scanningHint}>
+                Make sure the other device is on the Receive screen.
+              </Text>
+            </View>
+          ) : (
             <ScrollView
               horizontal
               showsHorizontalScrollIndicator={false}
               style={styles.deviceScroll}
               contentContainerStyle={styles.deviceScrollContent}>
-              {devices.map((item, idx) => (
-                <TouchableOpacity
-                  key={item.p2pAddress || item.ip || idx}
-                  onPress={() => connectToDevice(item)}
-                  style={styles.deviceCard}
-                  activeOpacity={0.75}>
-                  <View style={styles.deviceIconWrap}>
-                    <Text style={styles.deviceIcon}>{item.isWifiDirect ? '⚡' : '📱'}</Text>
-                  </View>
-                  <Text style={styles.deviceName} numberOfLines={1}>
-                    {item.name}
-                  </Text>
-                  {item.isWifiDirect && (
-                    <Text style={styles.deviceDirectBadge}>Quick Share</Text>
-                  )}
-                </TouchableOpacity>
-              ))}
+              {devices.map((device, idx) => {
+                const initial = (device.name || 'D').charAt(0).toUpperCase();
+                return (
+                  <TouchableOpacity
+                    key={device.p2pAddress || device.ip || idx}
+                    onPress={() => connectToDevice(device)}
+                    style={styles.deviceBubbleCard}
+                    activeOpacity={0.75}>
+                    <View style={styles.deviceAvatarCircle}>
+                      <Text style={styles.deviceInitialText}>{initial}</Text>
+                      <View style={styles.deviceLiveDot} />
+                    </View>
+                    <Text style={styles.deviceCardName} numberOfLines={1}>
+                      {device.name}
+                    </Text>
+                    <View style={styles.quickShareBadge}>
+                      <Text style={styles.quickShareBadgeText}>Quick Share</Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
           )}
         </View>
       </View>
 
-      {/* QR Scan button */}
-      <TouchableOpacity style={styles.qrBtn} onPress={openQrScanner} activeOpacity={0.8}>
-        <Text style={styles.qrBtnText}>📷  Scan QR Code</Text>
-      </TouchableOpacity>
-
-      {/* QR Scanner Modal */}
-      <Modal visible={showQrScanner} animationType="slide" statusBarTranslucent>
-        <View style={styles.scannerContainer}>
-          <CameraView
-            style={StyleSheet.absoluteFill}
-            facing="back"
-            barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
-            onBarcodeScanned={handleQrScanned}
-          />
-          {/* Top overlay */}
-          <View style={styles.scannerTopOverlay}>
-            <Text style={styles.scannerTitle}>Scan QR Code</Text>
-            <Text style={styles.scannerSubtitle}>
-              Hold your device over the QR code on the receiver's screen
-            </Text>
-          </View>
-          {/* Middle row: side overlays + viewfinder cutout */}
-          <View style={styles.scannerMiddleRow}>
-            <View style={styles.scannerSideOverlay} />
-            <View style={styles.viewfinder}>
-              <View style={[styles.corner, styles.cornerTL]} />
-              <View style={[styles.corner, styles.cornerTR]} />
-              <View style={[styles.corner, styles.cornerBL]} />
-              <View style={[styles.corner, styles.cornerBR]} />
-              <Animated.View
-                style={[
-                  styles.scanLine,
-                  {
-                    transform: [
-                      {
-                        translateY: scanLineAnim.interpolate({
-                          inputRange: [0, 1],
-                          outputRange: [0, 248],
-                        }),
-                      },
-                    ],
-                  },
-                ]}
-              />
-            </View>
-            <View style={styles.scannerSideOverlay} />
-          </View>
-          {/* Bottom overlay */}
-          <View style={styles.scannerBottomOverlay}>
-            {qrScanned ? (
-              <View style={styles.scanningRow}>
-                <ActivityIndicator color={C.primary} size="small" />
-                <Text style={styles.scanningRowText}>SCANNING...</Text>
-              </View>
-            ) : (
-              <TouchableOpacity
-                style={styles.cancelScanBtn}
-                onPress={() => setShowQrScanner(false)}>
-                <Text style={styles.cancelScanText}>Cancel</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-        </View>
-      </Modal>
-
-      {/* Connecting overlay */}
+      {/* Connecting overlay modal */}
       <Modal visible={connecting} transparent animationType="fade">
-        <View style={styles.connectingOverlay}>
-          <View style={styles.connectingBox}>
-            <ActivityIndicator color={C.primary} size="large" />
-            <Text style={styles.connectingTitle}>
-              Connecting{connectingDevice?.name ? ` to ${connectingDevice.name}` : ''}
-            </Text>
-            <Text style={styles.connectingIp}>
-              ⚡ Google Quick Share (Wi-Fi Direct)
-            </Text>
-            <Text style={styles.connectingHint}>
-              Accept the invitation prompt on the receiver device...
-            </Text>
-            <View style={styles.hotspotActiveBadgeSmall}>
-              <Text style={styles.hotspotActiveTextSmall}>
-                ⚡ Quick Share Direct Connection Active
-              </Text>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.connectingSheet}>
+            <View style={styles.sheetHandle} />
+
+            <View style={styles.connectingAvatarWrap}>
+              <ActivityIndicator color={C.primary} size="large" />
             </View>
+
+            <Text style={styles.connectingDeviceTitle}>
+              Connecting to {connectingDevice?.name || 'Device'}
+            </Text>
+            <Text style={styles.connectingSub}>
+              Establishing direct peer-to-peer connection...
+            </Text>
+
             <TouchableOpacity
-              style={styles.connectingCancel}
+              style={styles.cancelConnBtn}
               onPress={() => {
                 cancelConnectionRef.current?.();
                 cancelConnectionRef.current = null;
                 setConnecting(false);
-              }}>
-              <Text style={styles.connectingCancelText}>Cancel</Text>
+              }}
+              activeOpacity={0.8}>
+              <Text style={styles.cancelConnText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -538,392 +480,353 @@ export default function SendScreen({ navigation }: Props) {
 }
 
 const styles = StyleSheet.create({
-  // Layout
   container: {
     flex: 1,
     backgroundColor: C.bg,
-  },
-
-  // Header
-  header: {
     paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 8,
+    paddingBottom: 24,
   },
-  headerTitle: {
-    fontSize: 28,
-    fontWeight: '700',
-    color: C.text,
-    letterSpacing: -0.5,
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingTop: 8,
+    marginBottom: 16,
   },
-
-  // File card
-  fileCard: {
-    margin: 16,
+  backBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: C.surface,
-    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
     borderWidth: 1,
     borderColor: C.border,
-    overflow: 'hidden',
+  },
+  backArrow: {
+    color: C.text,
+    fontSize: 28,
+    lineHeight: 32,
+    marginTop: -2,
+  },
+  headerTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: C.text,
+    letterSpacing: -0.3,
+  },
+  headerRightPlaceholder: {
+    width: 44,
+  },
+  fileCard: {
+    backgroundColor: C.surface,
+    borderWidth: 1,
+    borderColor: C.border,
+    borderRadius: 22,
+    padding: 16,
+    marginBottom: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
   },
   fileCardEmpty: {
-    padding: 28,
+    flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 14,
   },
-  fileCardIcon: {
-    fontSize: 36,
-    marginBottom: 4,
+  fileIconBubble: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#E0F2FE',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fileIconText: {
+    fontSize: 24,
+  },
+  fileCardTextWrap: {
+    flex: 1,
   },
   fileCardTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: C.text,
+    marginBottom: 2,
+  },
+  fileCardSub: {
+    fontSize: 12,
+    color: C.textSub,
+  },
+  addBtnCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: C.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  addBtnPlus: {
+    color: '#FFFFFF',
+    fontSize: 22,
+    fontWeight: '700',
+    lineHeight: 24,
+  },
+  fileCardFilled: {
+    gap: 12,
+  },
+  fileCardFilledHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  fileCountTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: C.text,
   },
-  fileCardSub: {
-    fontSize: 13,
-    color: C.textSub,
-  },
-  fileCardFilled: {
-    padding: 18,
-    gap: 6,
-  },
-  fileCardFilledRow: {
-    marginBottom: 8,
-  },
-  fileRow: {
-    fontSize: 13,
-    color: C.textSub,
-    paddingVertical: 2,
-  },
-  fileMore: {
+  fileSizeText: {
     fontSize: 12,
-    color: C.textDim,
+    color: C.textSub,
     marginTop: 2,
   },
-
-  // Nearby Devices section
-  section: {
+  changeBtnPill: {
+    backgroundColor: C.surface2,
+    borderRadius: 100,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  changeBtnText: {
+    color: C.primary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  fileChipsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  fileChip: {
+    backgroundColor: C.surface2,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    maxWidth: 160,
+  },
+  fileChipText: {
+    fontSize: 11,
+    color: C.textSub,
+  },
+  fileMoreChip: {
+    backgroundColor: C.primaryGlow,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  fileMoreText: {
+    fontSize: 11,
+    color: C.primary,
+    fontWeight: '700',
+  },
+  nearbySection: {
     flex: 1,
-    paddingHorizontal: 16,
-    paddingBottom: 8,
   },
   sectionLabel: {
-    fontSize: 11,
-    fontWeight: '700',
+    fontSize: 12,
+    fontWeight: '800',
     color: C.textDim,
     letterSpacing: 1.2,
-    textTransform: 'uppercase',
-    marginBottom: 12,
+    marginBottom: 16,
   },
   radarArea: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 16,
+    borderRadius: 24,
+    backgroundColor: C.surface,
+    borderWidth: 1,
+    borderColor: C.border,
+    overflow: 'hidden',
+    position: 'relative',
+    padding: 16,
   },
-
-  // Radar
-  radar: {
-    width: 120,
-    height: 120,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginVertical: 8,
-  },
-  radarRing: {
+  radarRipple: {
     position: 'absolute',
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    borderWidth: 2,
+    width: 280,
+    height: 280,
+    borderRadius: 140,
+    borderWidth: 1.5,
     borderColor: C.primary,
   },
-  radarCenter: {
-    width: 16,
-    height: 16,
-    borderRadius: 8,
-    backgroundColor: C.primary,
+  emptySearchContainer: {
+    alignItems: 'center',
+    paddingHorizontal: 24,
   },
-  scanningText: {
-    fontSize: 13,
-    color: C.textSub,
-    fontStyle: 'italic',
+  centerPulsingIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: C.surface2,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: C.border,
+    marginBottom: 16,
+  },
+  scanningNotice: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: C.text,
     textAlign: 'center',
+    marginBottom: 6,
   },
-
-  // Device scroll
+  scanningHint: {
+    fontSize: 12,
+    color: C.textSub,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
   deviceScroll: {
-    flexGrow: 0,
+    width: '100%',
   },
   deviceScrollContent: {
-    paddingHorizontal: 4,
-    paddingVertical: 4,
-  },
-  deviceCard: {
-    alignItems: 'center',
-    backgroundColor: C.surface2,
-    borderRadius: 20,
-    padding: 16,
-    marginRight: 12,
-    minWidth: 100,
-    borderWidth: 1,
-    borderColor: C.border,
-  },
-  deviceIconWrap: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: C.primaryBg,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 8,
+    gap: 20,
+    paddingHorizontal: 12,
+    minWidth: '100%',
   },
-  deviceIcon: {
-    fontSize: 22,
+  deviceBubbleCard: {
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 20,
+    backgroundColor: C.surface,
+    borderWidth: 1,
+    borderColor: C.border,
+    width: 110,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 6,
+    elevation: 2,
   },
-  deviceName: {
-    fontSize: 12,
-    fontWeight: '600',
+  deviceAvatarCircle: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: '#E0F2FE',
+    borderWidth: 2,
+    borderColor: C.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 10,
+    position: 'relative',
+    shadowColor: C.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  deviceInitialText: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: C.primary,
+  },
+  deviceLiveDot: {
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: C.success,
+    borderWidth: 2,
+    borderColor: C.surface,
+  },
+  deviceCardName: {
+    fontSize: 13,
+    fontWeight: '700',
     color: C.text,
     textAlign: 'center',
+    marginBottom: 6,
   },
-  deviceDirectBadge: {
-    color: '#4ADE80',
-    fontSize: 10,
-    fontWeight: '700',
-    backgroundColor: '#052E16',
+  quickShareBadge: {
+    backgroundColor: '#E0F2FE',
+    borderRadius: 6,
     paddingHorizontal: 6,
     paddingVertical: 2,
-    borderRadius: 4,
-    marginTop: 4,
   },
-
-  // QR button
-  qrBtn: {
-    margin: 16,
-    marginTop: 8,
-    backgroundColor: C.surface,
-    borderRadius: 16,
-    padding: 16,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: C.border,
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 8,
+  quickShareBadgeText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: C.primary,
   },
-  qrBtnText: {
-    color: C.text,
-    fontWeight: '600',
-    fontSize: 15,
-  },
-
-  // QR Scanner Modal
-  scannerContainer: {
+  modalBackdrop: {
     flex: 1,
-    backgroundColor: '#000',
-  },
-  scannerTopOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.7)',
-    width: '100%',
-    alignItems: 'center',
+    backgroundColor: 'rgba(15, 23, 42, 0.45)',
     justifyContent: 'flex-end',
-    paddingBottom: 24,
   },
-  scannerTitle: {
-    color: C.text,
-    fontSize: 22,
-    fontWeight: '700',
-    marginBottom: 8,
-    textAlign: 'center',
+  connectingSheet: {
+    backgroundColor: C.surface,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    padding: 24,
+    alignItems: 'center',
+    borderTopWidth: 1,
+    borderColor: C.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 16,
+    elevation: 6,
   },
-  scannerSubtitle: {
-    color: C.textSub,
-    fontSize: 13,
-    textAlign: 'center',
-    paddingHorizontal: 32,
+  sheetHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: C.border,
+    marginBottom: 20,
   },
-  scannerMiddleRow: {
-    flexDirection: 'row',
-    height: 260,
-  },
-  scannerSideOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.6)',
-  },
-  viewfinder: {
-    width: 260,
-    height: 260,
-    position: 'relative',
-  },
-  corner: {
-    position: 'absolute',
-    width: 28,
-    height: 28,
+  connectingAvatarWrap: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: '#E0F2FE',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
     borderColor: C.primary,
-    borderWidth: 4,
+    marginBottom: 16,
   },
-  cornerTL: {
-    top: 0,
-    left: 0,
-    borderRightWidth: 0,
-    borderBottomWidth: 0,
-    borderTopLeftRadius: 6,
+  connectingDeviceTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: C.text,
+    marginBottom: 4,
+    textAlign: 'center',
   },
-  cornerTR: {
-    top: 0,
-    right: 0,
-    borderLeftWidth: 0,
-    borderBottomWidth: 0,
-    borderTopRightRadius: 6,
+  connectingSub: {
+    fontSize: 13,
+    color: C.textSub,
+    marginBottom: 24,
+    textAlign: 'center',
   },
-  cornerBL: {
-    bottom: 0,
-    left: 0,
-    borderRightWidth: 0,
-    borderTopWidth: 0,
-    borderBottomLeftRadius: 6,
-  },
-  cornerBR: {
-    bottom: 0,
-    right: 0,
-    borderLeftWidth: 0,
-    borderTopWidth: 0,
-    borderBottomRightRadius: 6,
-  },
-  scanLine: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: 2,
-    backgroundColor: C.primary,
-    shadowColor: C.primary,
-    shadowOpacity: 0.9,
-    shadowRadius: 6,
-    elevation: 4,
-  },
-  scannerBottomOverlay: {
-    flex: 1.2,
-    backgroundColor: 'rgba(0,0,0,0.6)',
+  cancelConnBtn: {
     width: '100%',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 24,
-  },
-  scanningRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  scanningRowText: {
-    color: C.text,
-    fontSize: 14,
-    fontWeight: '600',
-    letterSpacing: 2,
-  },
-  cancelScanBtn: {
-    backgroundColor: C.surface,
-    borderRadius: 100,
-    paddingHorizontal: 36,
-    paddingVertical: 14,
-  },
-  cancelScanText: {
-    color: C.text,
-    fontWeight: '700',
-    fontSize: 15,
-  },
-
-  // Connecting Modal
-  connectingOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.75)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  connectingBox: {
-    backgroundColor: C.surface,
-    borderRadius: 28,
-    padding: 32,
-    width: '85%',
-    alignItems: 'center',
-    gap: 14,
+    backgroundColor: C.surface2,
     borderWidth: 1,
     borderColor: C.border,
-  },
-  connectingTitle: {
-    color: C.text,
-    fontSize: 20,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  connectingIp: {
-    color: C.accent,
-    fontSize: 13,
-    fontWeight: '600',
-    marginTop: -4,
-  },
-  connectingHint: {
-    color: C.textSub,
-    fontSize: 13,
-    textAlign: 'center',
-  },
-  connectingWarningBox: {
-    backgroundColor: 'rgba(239, 68, 68, 0.1)',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.25)',
-    padding: 10,
-    marginTop: 4,
-  },
-  hotspotActiveBadgeSmall: {
-    backgroundColor: '#052E16',
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#166534',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    marginTop: 10,
+    borderRadius: 14,
+    paddingVertical: 14,
     alignItems: 'center',
-    width: '100%',
   },
-  hotspotActiveTextSmall: {
-    color: '#4ADE80',
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  connectingWarningText: {
-    color: '#FCA5A5',
-    fontSize: 12,
-    textAlign: 'center',
-    lineHeight: 16,
-  },
-  connectingWifiBtn: {
-    marginTop: 10,
-    backgroundColor: C.primary,
-    borderRadius: 100,
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    alignItems: 'center',
-    width: '100%',
-  },
-  connectingWifiBtnText: {
-    color: '#0F1117',
-    fontWeight: '700',
-    fontSize: 14,
-  },
-  connectingCancel: {
-    marginTop: 8,
-    borderWidth: 1,
-    borderColor: C.red,
-    borderRadius: 100,
-    paddingHorizontal: 32,
-    paddingVertical: 12,
-  },
-  connectingCancelText: {
+  cancelConnText: {
     color: C.red,
-    fontWeight: '600',
-    fontSize: 15,
+    fontSize: 14,
+    fontWeight: '700',
   },
 });

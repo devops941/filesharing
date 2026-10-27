@@ -23,13 +23,15 @@ export type OfferInfo = {
   fileName: string;
   size: number;
   mimeType?: string;
+  fileIndex?: number;
+  fileTotal?: number;
 };
 
 export type ReceiverUI = {
   confirmCode: (code: string) => Promise<boolean>;
   acceptFile: (offer: OfferInfo) => Promise<boolean>;
   progress: (received: number) => void;
-  done: (filePath: string, verified: boolean) => void;
+  done: (filePath: string, verified: boolean, fileCount?: number) => void;
   cancelled: () => void;
   error: (msg: string) => void;
 };
@@ -41,8 +43,21 @@ function decodeOffer(p: Buffer): OfferInfo & { header: Uint8Array } {
   return { ...meta, header };
 }
 
-export function startReceiver(ui: ReceiverUI): ReturnType<typeof TcpSocket.createServer> {
+export function startReceiver(
+  ui: ReceiverUI,
+  cancelRef?: { cancel: () => void },
+): ReturnType<typeof TcpSocket.createServer> {
   const server = TcpSocket.createServer(async socket => {
+    let clientSocket: any = socket;
+    if (cancelRef) {
+      cancelRef.cancel = () => {
+        try {
+          clientSocket?.write(frame(T.CANCEL));
+          clientSocket?.destroy();
+        } catch {}
+      };
+    }
+
     const me = await newSession();
     let keys: ReturnType<typeof sessionKeys> | null = null;
     let decrypt: ReturnType<typeof decryptor> | null = null;
@@ -50,16 +65,18 @@ export function startReceiver(ui: ReceiverUI): ReturnType<typeof TcpSocket.creat
     let received = 0;
     let idx = 0;
     let lastOutPath = '';
+    let receivedFileCount = 0;
     let doneCalled = false;
     function finalize() {
       if (doneCalled) return;
       doneCalled = true;
       if (outPath) {
+        // Delete incomplete file and navigate receiver back — not an error, just cancelled
         FileSystem.deleteAsync(outPath, { idempotent: true }).catch(() => {});
-        ui.error('Transfer interrupted: connection closed before file completed');
+        ui.cancelled();
         return;
       }
-      if (lastOutPath) ui.done(lastOutPath, true);
+      if (lastOutPath) ui.done(lastOutPath, true, receivedFileCount);
     }
 
     let pairingConfirmed = false;
@@ -131,6 +148,7 @@ export function startReceiver(ui: ReceiverUI): ReturnType<typeof TcpSocket.creat
             }
 
             if (result.tag === FINAL_TAG) {
+              receivedFileCount++;
               socket.write(frame(T.DONE));
               lastOutPath = outPath;
               decrypt = null;
