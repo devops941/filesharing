@@ -42,7 +42,12 @@ class WifiP2pModule(private val reactContext: ReactApplicationContext) :
     }
 
     override fun onChannelDisconnected() {
+        // BUG-6 FIX: Re-initialize channel AND re-register receiver.
+        // The BroadcastReceiver holds a reference to P2P events; after channel
+        // disconnect the old receiver may be stale, so fully re-initialize.
+        unregisterReceiver()
         channel = manager?.initialize(reactContext, Looper.getMainLooper(), this)
+        registerReceiver()
     }
 
     private fun registerReceiver() {
@@ -303,6 +308,14 @@ class WifiP2pModule(private val reactContext: ReactApplicationContext) :
             promise.resolve(false)
             return
         }
+        // BUG-15 FIX: Java reflection for setDeviceName is blocked on Android 10+ (API 29+)
+        // via restricted non-SDK interface enforcement. On modern Android, this always fails.
+        // The app uses mDNS device name (via Zeroconf) as the primary identifier anyway.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            // Android 10+: reflection blocked — resolve false gracefully
+            promise.resolve(false)
+            return
+        }
         try {
             val method = mgr.javaClass.getMethod(
                 "setDeviceName",
@@ -361,7 +374,10 @@ class WifiP2pModule(private val reactContext: ReactApplicationContext) :
 
         val config = WifiP2pConfig().apply {
             this.deviceAddress = deviceAddress
-            this.groupOwnerIntent = 0 // We are client/sender; Receiver is Autonomous Group Owner
+            // BUG-7 FIX: Use intent=1 (low preference, non-zero) so receiver's autonomous
+            // group is preferred as GO. Intent=0 meant sender always tried to be client
+            // but if receiver was also intent=0 (as discoverer, not GO), connection failed.
+            this.groupOwnerIntent = 1
         }
 
         try {

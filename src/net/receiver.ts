@@ -17,6 +17,7 @@ import {
   hasSpace,
   appendChunk,
   uniquePath,
+  clearWriteLock,
 } from '../files/writer';
 
 export type OfferInfo = {
@@ -67,9 +68,14 @@ export function startReceiver(
     let lastOutPath = '';
     let receivedFileCount = 0;
     let doneCalled = false;
+    let transferCompleted = false; // BUG-14 FIX: tracks successful FINISH received
     function finalize() {
       if (doneCalled) return;
       doneCalled = true;
+      if (transferCompleted) {
+        // Transfer already completed cleanly via T.FINISH — do nothing here
+        return;
+      }
       if (outPath) {
         // Delete incomplete file and navigate receiver back — not an error, just cancelled
         FileSystem.deleteAsync(outPath, { idempotent: true }).catch(() => {});
@@ -151,6 +157,7 @@ export function startReceiver(
               receivedFileCount++;
               socket.write(frame(T.DONE));
               lastOutPath = outPath;
+              clearWriteLock(outPath); // BUG-13: release write mutex for this file
               decrypt = null;
               outPath = '';
               received = 0;
@@ -161,6 +168,7 @@ export function startReceiver(
 
           case T.CANCEL: {
             if (outPath) {
+              clearWriteLock(outPath); // BUG-13: release mutex on cancel
               await FileSystem.deleteAsync(outPath, { idempotent: true }).catch(() => {});
             }
             ui.cancelled();
@@ -175,6 +183,7 @@ export function startReceiver(
           }
 
           case T.FINISH: {
+            transferCompleted = true; // BUG-14 FIX: mark before finalize
             finalize();
             socket.destroy();
             break;

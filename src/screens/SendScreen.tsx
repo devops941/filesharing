@@ -101,8 +101,17 @@ export default function SendScreen({ navigation }: Props) {
     let mounted = true;
     let p2pSub: { remove(): void } | null = null;
 
-    requestPermissions('send').then(async () => {
+    requestPermissions('send').then(async granted => {
       if (!mounted) return;
+      // BUG-11/19 FIX: Alert user if critical permissions were not granted
+      if (!granted) {
+        Alert.alert(
+          'Permissions Required',
+          'SecureShare needs Location (or Nearby Wi-Fi Devices on Android 13+) permission to discover nearby devices. Please grant it in Settings.',
+        );
+        setScanning(false);
+        return;
+      }
       setScanning(true);
 
       // mDNS peer scan and active subnet probe
@@ -169,7 +178,9 @@ export default function SendScreen({ navigation }: Props) {
   async function pickFiles() {
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        copyToCacheDirectory: false,
+        // BUG-19 FIX: copyToCacheDirectory=true ensures Android content:// URIs are
+        // materialized to file:// paths that expo-file-system can read with position/length.
+        copyToCacheDirectory: true,
         multiple: true,
       });
       if (result.canceled) return;

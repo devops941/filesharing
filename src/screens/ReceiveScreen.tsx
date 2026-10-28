@@ -20,10 +20,9 @@ import type { OfferInfo } from '../net/receiver';
 import { getDeviceName, saveDeviceName } from '../utils/deviceName';
 import {
   initWifiDirect,
+  createP2pGroup,
   setP2pDeviceName,
   removeP2pGroup,
-  startP2pDiscovery,
-  stopP2pDiscovery,
   subscribeP2pConnection,
 } from '../net/wifiDirect';
 import { requestPermissions } from '../permissions';
@@ -113,10 +112,13 @@ export default function ReceiveScreen({ navigation }: Props) {
     requestPermissions('receive').then(async () => {
       if (!mounted) return;
 
-      // Start Wi-Fi Direct in receiver mode (listen mode without dropping active Wi-Fi)
+      // BUG-8 FIX: Receiver must become the Wi-Fi Direct Group Owner (GO),
+      // NOT a discoverer. The sender will find us via mDNS and connect to our GO.
+      // Quick Share model: receiver = autonomous GO, sender = client.
       const ok = await initWifiDirect();
       if (ok && mounted) {
-        await startP2pDiscovery().catch(() => {});
+        // Create autonomous group so this device advertises as GO
+        await createP2pGroup().catch(() => {});
         setIsReceivingActive(true);
 
         p2pSub = subscribeP2pConnection(info => {
@@ -211,7 +213,7 @@ export default function ReceiveScreen({ navigation }: Props) {
       registerTransferCancel(null);
       p2pSub?.remove();
       if (advertisingName.current) stopAdvertising(advertisingName.current);
-      stopP2pDiscovery().catch(() => {});
+      // BUG-8 FIX: Receiver is GO — remove group on cleanup, not stopDiscovery
       serverRef.current?.close();
       removeP2pGroup().catch(() => {});
     };

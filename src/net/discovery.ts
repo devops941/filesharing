@@ -62,26 +62,26 @@ export function startScan(onFound: (d: Device) => void) {
       rawList.push(s.host);
     }
 
-    const valid = rawList.filter(
+    const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
+    const ipv4List = rawList.filter(
       a =>
         a &&
         typeof a === 'string' &&
+        ipv4Regex.test(a) &&
         !a.startsWith('127.') &&
-        !a.startsWith('169.254.') &&
-        a !== '::1' &&
-        !a.startsWith('fe80:'),
+        !a.startsWith('169.254.'),
     );
 
     // Filter out Wi-Fi Direct virtual IP 192.168.49.x unless local device is also on it
-    const lan = valid.filter(a => isLanIP(a) && !isWifiDirectIP(a));
+    const lan = ipv4List.filter(a => isLanIP(a) && !isWifiDirectIP(a));
 
     // Best: same subnet as sender (e.g. 192.168.1.x)
     const sameSubnet = mySubnetPrefix ? lan.find(a => a.startsWith(mySubnetPrefix)) : undefined;
     const ip =
       sameSubnet ??
       lan[0] ??
-      valid.find(a => isLanIP(a)) ??
-      valid[0];
+      ipv4List.find(a => isLanIP(a)) ??
+      ipv4List[0];
 
     if (ip) {
       onFound({
@@ -89,10 +89,15 @@ export function startScan(onFound: (d: Device) => void) {
         ip,
         port: s.port || PORT,
         platform: s.txt?.platform,
-        addresses: valid,
+        addresses: ipv4List,
       });
     }
   });
+
+  // BUG-12 FIX: Stop any previous scan before starting a new one
+  try {
+    zc.stop();
+  } catch {}
 
   // Start mDNS zeroconf browse
   try {
@@ -131,20 +136,25 @@ async function probeSubnet(
 
     // Prioritized candidate list:
     // 1. Hotspot gateway / Router gateway (.1)
-    // 2. Immediate neighbors around our IP (.myLast - 10 to .myLast + 10)
-    // 3. Common DHCP range (.2 to .40)
+    // 2. Immediate neighbors around our IP (.myLast - 15 to .myLast + 15)
+    // 3. Common DHCP range (.2 to .50)
+    // 4. Remaining subnet addresses (.51 to .254)
     const hostsToProbe = new Set<number>();
     hostsToProbe.add(1);
 
-    for (let i = Math.max(2, myLast - 10); i <= Math.min(254, myLast + 10); i++) {
+    for (let i = Math.max(2, myLast - 15); i <= Math.min(254, myLast + 15); i++) {
       if (i !== myLast) hostsToProbe.add(i);
     }
-    for (let i = 2; i <= 40; i++) {
+    for (let i = 2; i <= 50; i++) {
+      if (i !== myLast) hostsToProbe.add(i);
+    }
+    // Full subnet fallback (probed after priority candidates)
+    for (let i = 51; i <= 254; i++) {
       if (i !== myLast) hostsToProbe.add(i);
     }
 
     const hostList = Array.from(hostsToProbe);
-    const BATCH_SIZE = 12;
+    const BATCH_SIZE = 14;
 
     for (let b = 0; b < hostList.length; b += BATCH_SIZE) {
       if (cancelRef.cancelled) break;
@@ -152,14 +162,20 @@ async function probeSubnet(
       await Promise.all(
         batch.map(h => {
           const targetIp = `${subnetPrefix}${h}`;
-          return probeIp(targetIp, onFound);
+          // BUG-5 FIX: Pass cancelRef into probeIp
+          return probeIp(targetIp, onFound, cancelRef);
         }),
       );
     }
   } catch {}
 }
 
-function probeIp(targetIp: string, onFound: (d: Device) => void): Promise<void> {
+// BUG-5 FIX: Accept cancelRef so that per-connection callbacks can be suppressed
+function probeIp(
+  targetIp: string,
+  onFound: (d: Device) => void,
+  cancelRef: { cancelled: boolean },
+): Promise<void> {
   return new Promise(resolve => {
     let resolved = false;
     let client: any = null;
@@ -178,12 +194,15 @@ function probeIp(targetIp: string, onFound: (d: Device) => void): Promise<void> 
     try {
       client = TcpSocket.createConnection({ host: targetIp, port: PORT }, () => {
         clearTimeout(timer);
-        onFound({
-          name: `Nearby Device (${targetIp})`,
-          ip: targetIp,
-          port: PORT,
-          addresses: [targetIp],
-        });
+        // BUG-5 FIX: Check cancel state before reporting
+        if (!cancelRef.cancelled) {
+          onFound({
+            name: `Nearby Device (${targetIp})`,
+            ip: targetIp,
+            port: PORT,
+            addresses: [targetIp],
+          });
+        }
         done();
       });
       client.setTimeout(500);
