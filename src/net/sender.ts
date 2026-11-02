@@ -212,11 +212,25 @@ export async function sendFiles(
 
     let destroyed = false;
     let connectTimeout: ReturnType<typeof setTimeout>;
+    // HELLO timeout: after TCP connects we expect a HELLO reply within 10 s.
+    // Without this, the "Connecting…" spinner hangs if receiver is not open.
+    let helloTimer: ReturnType<typeof setTimeout> | null = null;
     const socket = TcpSocket.createConnection(
       { host: device.ip, port: device.port },
       () => {
         clearTimeout(connectTimeout);
         socket.write(frame(T.HELLO, helloPayload(me)));
+        helloTimer = setTimeout(() => {
+          if (destroyed) return;
+          destroyed = true;
+          abortWaiters();
+          ui.error(
+            `The receiver on ${device.name || device.ip} did not respond.\n\n` +
+            `Make sure the Receive screen is open and both devices are on the same Wi-Fi network.`,
+          );
+          socket.destroy();
+          rejectTransfer(new Error('HELLO timeout'));
+        }, 10000);
       },
     );
     if (cancelRef) {
@@ -224,6 +238,7 @@ export async function sendFiles(
         if (destroyed) return;
         destroyed = true;
         clearTimeout(connectTimeout);
+        if (helloTimer) { clearTimeout(helloTimer); helloTimer = null; }
         abortWaiters();
         try {
           socket.write(frame(T.CANCEL));
@@ -249,6 +264,8 @@ export async function sendFiles(
     const parser = new FrameParser(async (type, p) => {
       try {
         if (type === T.HELLO) {
+          // Clear the HELLO-response timeout — receiver is alive and talking
+          if (helloTimer) { clearTimeout(helloTimer); helloTimer = null; }
           const peer = JSON.parse(p.toString('utf8'));
           const peerPub = Buffer.from(peer.publicKey, 'base64');
           savedKeys = sessionKeys('client', me, peerPub);

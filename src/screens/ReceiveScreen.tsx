@@ -9,6 +9,8 @@ import {
   Modal,
   Animated,
   StatusBar,
+  Linking,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useKeepAwake } from 'expo-keep-awake';
@@ -26,6 +28,7 @@ import {
   subscribeP2pConnection,
 } from '../net/wifiDirect';
 import { requestPermissions } from '../permissions';
+import { detectLocalIP } from '../utils/networkSettings';
 import {
   notifyReceiving,
   notifyDone,
@@ -109,24 +112,55 @@ export default function ReceiveScreen({ navigation }: Props) {
     let unmounted = false;
     let p2pSub: { remove(): void } | null = null;
 
-    requestPermissions('receive').then(async () => {
+    requestPermissions('receive').then(async (granted: boolean) => {
       if (!mounted) return;
+
+      // Inform user if permissions were denied so they can fix it in Settings
+      if (!granted) {
+        Alert.alert(
+          'Permissions Required',
+          'SecureShare needs Location (or Nearby Wi-Fi Devices on Android 13+) permission to be discoverable by nearby devices.\n\nPlease grant the required permissions in Settings.',
+          [
+            {
+              text: 'Open Settings',
+              onPress: () => Linking.openSettings().catch(() => {}),
+            },
+            { text: 'OK' },
+          ],
+        );
+        // Continue even if denied — the TCP server works without location
+      }
+
+      // Check Wi-Fi connectivity — receiver must be on Wi-Fi to be found
+      const localIp = await detectLocalIP();
+      if (mounted && !localIp) {
+        Alert.alert(
+          'Wi-Fi is Off',
+          'Please turn on Wi-Fi so nearby devices can find you.\n\n' +
+          (Platform.OS === 'android'
+            ? 'Go to Settings → Network & Internet → Wi-Fi and connect to your network.'
+            : 'Go to Settings → Wi-Fi and connect to your network.'),
+          [{ text: 'Open Settings', onPress: () => Linking.openSettings().catch(() => {}) }, { text: 'OK' }],
+        );
+      }
 
       // BUG-8 FIX: Receiver must become the Wi-Fi Direct Group Owner (GO),
       // NOT a discoverer. The sender will find us via mDNS and connect to our GO.
       // Quick Share model: receiver = autonomous GO, sender = client.
+      // Only create autonomous P2P group if NOT connected to Wi-Fi (offline mode)
+      // When connected to Wi-Fi, creating a P2P group can disrupt the Wi-Fi connection
       const ok = await initWifiDirect();
       if (ok && mounted) {
-        // Create autonomous group so this device advertises as GO
-        await createP2pGroup().catch(() => {});
+        if (!localIp) {
+          await createP2pGroup().catch(() => {});
+          p2pSub = subscribeP2pConnection(info => {
+            if (!mounted) return;
+            if (info?.groupFormed) {
+              setIsReceivingActive(true);
+            }
+          });
+        }
         setIsReceivingActive(true);
-
-        p2pSub = subscribeP2pConnection(info => {
-          if (!mounted) return;
-          if (info?.groupFormed) {
-            setIsReceivingActive(true);
-          }
-        });
       }
     });
 
@@ -205,6 +239,7 @@ export default function ReceiveScreen({ navigation }: Props) {
         },
       },
       cancelRef,
+      () => advertisingName.current,
     );
 
     return () => {
@@ -295,8 +330,8 @@ export default function ReceiveScreen({ navigation }: Props) {
           </Animated.View>
         </View>
 
-        {/* Quick Share title & status */}
-        <Text style={styles.quickShareTitle}>Quick Share</Text>
+        {/* Receive title & status */}
+        <Text style={styles.quickShareTitle}>Receive</Text>
         <Text style={styles.quickShareSub}>Ready to receive files</Text>
 
         {/* Status pill badge */}
@@ -318,7 +353,7 @@ export default function ReceiveScreen({ navigation }: Props) {
           <Text style={styles.bottomDesc}>
             On the sender phone, select files and tap{' '}
             <Text style={styles.highlightText}>{deviceName || 'this device'}</Text> in the
-            Quick Share list.
+            nearby devices list.
           </Text>
         </View>
       </View>

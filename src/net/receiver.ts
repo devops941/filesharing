@@ -47,6 +47,7 @@ function decodeOffer(p: Buffer): OfferInfo & { header: Uint8Array } {
 export function startReceiver(
   ui: ReceiverUI,
   cancelRef?: { cancel: () => void },
+  getDeviceName?: () => string,
 ): ReturnType<typeof TcpSocket.createServer> {
   const server = TcpSocket.createServer(async socket => {
     let clientSocket: any = socket;
@@ -111,7 +112,19 @@ export function startReceiver(
           case T.HELLO: {
             const peer = JSON.parse(p.toString('utf8'));
             const peerPub = Buffer.from(peer.publicKey, 'base64');
-            socket.write(frame(T.HELLO, helloPayload(me)));
+            const myName = getDeviceName ? getDeviceName() : '';
+            socket.write(frame(T.HELLO, helloPayload(me, myName)));
+
+            // If this is an active discovery probe, do NOT open the pairing screen — cleanly disconnect
+            if (peer.probe) {
+              setTimeout(() => {
+                try {
+                  socket.destroy();
+                } catch {}
+              }, 50);
+              break;
+            }
+
             keys = sessionKeys('server', me, peerPub);
             const code = verificationCode(me.publicKey, peerPub);
             const ok = await ui.confirmCode(code);
