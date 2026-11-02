@@ -17,6 +17,7 @@ import {
   hasSpace,
   appendChunk,
   uniquePath,
+  clearWriteLock,
 } from '../files/writer';
 
 export type OfferInfo = {
@@ -46,6 +47,7 @@ function decodeOffer(p: Buffer): OfferInfo & { header: Uint8Array } {
 export function startReceiver(
   ui: ReceiverUI,
   cancelRef?: { cancel: () => void },
+  getDeviceName?: () => string,
 ): ReturnType<typeof TcpSocket.createServer> {
   const server = TcpSocket.createServer(async socket => {
     let clientSocket: any = socket;
@@ -67,9 +69,14 @@ export function startReceiver(
     let lastOutPath = '';
     let receivedFileCount = 0;
     let doneCalled = false;
+    let transferCompleted = false; // BUG-14 FIX: tracks successful FINISH received
     function finalize() {
       if (doneCalled) return;
       doneCalled = true;
+      if (transferCompleted) {
+        // Transfer already completed cleanly via T.FINISH — do nothing here
+        return;
+      }
       if (outPath) {
         // Delete incomplete file and navigate receiver back — not an error, just cancelled
         FileSystem.deleteAsync(outPath, { idempotent: true }).catch(() => {});
@@ -105,7 +112,19 @@ export function startReceiver(
           case T.HELLO: {
             const peer = JSON.parse(p.toString('utf8'));
             const peerPub = Buffer.from(peer.publicKey, 'base64');
-            socket.write(frame(T.HELLO, helloPayload(me)));
+            const myName = getDeviceName ? getDeviceName() : '';
+            socket.write(frame(T.HELLO, helloPayload(me, myName)));
+
+            // If this is an active discovery probe, do NOT open the pairing screen — cleanly disconnect
+            if (peer.probe) {
+              setTimeout(() => {
+                try {
+                  socket.destroy();
+                } catch {}
+              }, 50);
+              break;
+            }
+
             keys = sessionKeys('server', me, peerPub);
             const code = verificationCode(me.publicKey, peerPub);
             const ok = await ui.confirmCode(code);
@@ -151,6 +170,7 @@ export function startReceiver(
               receivedFileCount++;
               socket.write(frame(T.DONE));
               lastOutPath = outPath;
+              clearWriteLock(outPath); // BUG-13: release write mutex for this file
               decrypt = null;
               outPath = '';
               received = 0;
@@ -161,6 +181,7 @@ export function startReceiver(
 
           case T.CANCEL: {
             if (outPath) {
+              clearWriteLock(outPath); // BUG-13: release mutex on cancel
               await FileSystem.deleteAsync(outPath, { idempotent: true }).catch(() => {});
             }
             ui.cancelled();
@@ -175,6 +196,7 @@ export function startReceiver(
           }
 
           case T.FINISH: {
+            transferCompleted = true; // BUG-14 FIX: mark before finalize
             finalize();
             socket.destroy();
             break;

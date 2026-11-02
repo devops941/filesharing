@@ -94,8 +94,9 @@ export async function sendFile(
 
           const enc = encryptor(keys.sharedTx);
           state.enc = enc;
+          // BUG-1 FIX: encodeOffer(file, header) — no extra args for single-file
           socket.write(
-            frame(T.OFFER, encodeOffer(file, enc.header, keys.sharedTx)),
+            frame(T.OFFER, encodeOffer(file, enc.header)),
           );
         }
 
@@ -146,7 +147,9 @@ export async function sendFile(
       let sent = 0;
       const total = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
 
-      await readChunks(file.uri, async b64 => {
+      await readChunks(
+        file.uri,
+        async b64 => {
         const plain = Buffer.from(b64, 'base64');
         const last = ++i === total;
         const cipher = state.enc!.push(plain, last);
@@ -165,7 +168,7 @@ export async function sendFile(
             waitAck = r;
           });
         }
-      });
+      }, file.size);
     }
   });
 }
@@ -209,11 +212,25 @@ export async function sendFiles(
 
     let destroyed = false;
     let connectTimeout: ReturnType<typeof setTimeout>;
+    // HELLO timeout: after TCP connects we expect a HELLO reply within 10 s.
+    // Without this, the "Connecting…" spinner hangs if receiver is not open.
+    let helloTimer: ReturnType<typeof setTimeout> | null = null;
     const socket = TcpSocket.createConnection(
       { host: device.ip, port: device.port },
       () => {
         clearTimeout(connectTimeout);
         socket.write(frame(T.HELLO, helloPayload(me)));
+        helloTimer = setTimeout(() => {
+          if (destroyed) return;
+          destroyed = true;
+          abortWaiters();
+          ui.error(
+            `The receiver on ${device.name || device.ip} did not respond.\n\n` +
+            `Make sure the Receive screen is open and both devices are on the same Wi-Fi network.`,
+          );
+          socket.destroy();
+          rejectTransfer(new Error('HELLO timeout'));
+        }, 10000);
       },
     );
     if (cancelRef) {
@@ -221,6 +238,7 @@ export async function sendFiles(
         if (destroyed) return;
         destroyed = true;
         clearTimeout(connectTimeout);
+        if (helloTimer) { clearTimeout(helloTimer); helloTimer = null; }
         abortWaiters();
         try {
           socket.write(frame(T.CANCEL));
@@ -246,6 +264,8 @@ export async function sendFiles(
     const parser = new FrameParser(async (type, p) => {
       try {
         if (type === T.HELLO) {
+          // Clear the HELLO-response timeout — receiver is alive and talking
+          if (helloTimer) { clearTimeout(helloTimer); helloTimer = null; }
           const peer = JSON.parse(p.toString('utf8'));
           const peerPub = Buffer.from(peer.publicKey, 'base64');
           savedKeys = sessionKeys('client', me, peerPub);
@@ -342,7 +362,9 @@ export async function sendFiles(
       const total = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
       inFlight = 0;
 
-      await readChunks(file.uri, async b64 => {
+      await readChunks(
+        file.uri,
+        async b64 => {
         const plain = Buffer.from(b64, 'base64');
         const last = ++i === total;
         const cipher = enc!.push(plain, last);
@@ -355,15 +377,12 @@ export async function sendFiles(
         ui.progress(idx, sent, file.size);
 
         if (++inFlight >= ACK_EVERY * 2) {
+          // BUG-10 FIX: Removed inner redundant check; just always wait for ACK
           await new Promise<void>(r => {
-            if (inFlight < ACK_EVERY * 2) {
-              r();
-            } else {
-              waitAck = r;
-            }
+            waitAck = r;
           });
         }
-      });
+      }, file.size);
 
       if (!doneReceived) {
         await new Promise<void>(r => {
@@ -380,8 +399,12 @@ export async function sendFiles(
       if (fileIdx < files.length) {
         offerFile(fileIdx);
       } else {
-        socket.write(frame(T.FINISH));
-        socket.destroy();
+        await writeAsync(socket as any, frame(T.FINISH));
+        setTimeout(() => {
+          try {
+            socket.destroy();
+          } catch {}
+        }, 300);
         ui.done();
         resolveTransfer();
       }

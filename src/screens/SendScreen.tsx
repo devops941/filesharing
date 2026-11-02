@@ -10,6 +10,8 @@ import {
   Modal,
   ScrollView,
   StatusBar,
+  Linking,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
@@ -27,6 +29,7 @@ import {
 } from '../notifications';
 import { registerTransferCancel } from '../net/activeTransfer';
 import { requestPermissions } from '../permissions';
+import { detectLocalIP } from '../utils/networkSettings';
 import {
   initWifiDirect,
   startP2pDiscovery,
@@ -101,9 +104,34 @@ export default function SendScreen({ navigation }: Props) {
     let mounted = true;
     let p2pSub: { remove(): void } | null = null;
 
-    requestPermissions('send').then(async () => {
+    requestPermissions('send').then(async granted => {
       if (!mounted) return;
+      // BUG-11/19 FIX: Alert user if critical permissions were not granted
+      if (!granted) {
+        Alert.alert(
+          'Permissions Required',
+          'SecureShare needs Location (or Nearby Wi-Fi Devices on Android 13+) permission to discover nearby devices. Please grant it in Settings.',
+        );
+        setScanning(false);
+        return;
+      }
       setScanning(true);
+
+      // Check Wi-Fi connectivity before scanning — devices won't be visible without it
+      const localIp = await detectLocalIP();
+      if (!mounted) return;
+      if (!localIp) {
+        Alert.alert(
+          'Wi-Fi is Off',
+          'Please turn on Wi-Fi to discover nearby devices.\n\n' +
+          (Platform.OS === 'android'
+            ? 'Go to Settings → Network & Internet → Wi-Fi.'
+            : 'Go to Settings → Wi-Fi.'),
+          [{ text: 'Open Settings', onPress: () => Linking.openSettings().catch(() => {}) }, { text: 'OK' }],
+        );
+        setScanning(false);
+        return;
+      }
 
       // mDNS peer scan and active subnet probe
       startScan(d => {
@@ -123,22 +151,24 @@ export default function SendScreen({ navigation }: Props) {
         });
       });
 
-      // Wi-Fi Direct peer discovery
+      // Wi-Fi Direct peer discovery — ONLY include devices running our SecureShare app
       await initWifiDirect();
       await startP2pDiscovery().catch(() => {});
       p2pSub = subscribeP2pPeers(peers => {
         if (!mounted) return;
         setDevices(prev => {
           const mDnsDevices = prev.filter(d => !d.isWifiDirect);
+          // Filter out any device not running our app (e.g. strangers' phones or system Quick Share)
           const p2pDevices: Device[] = peers
             .filter(
               p =>
+                (p.deviceName || '').toLowerCase().startsWith('secureshare') &&
                 !mDnsDevices.some(
                   m => m.name.toLowerCase() === (p.deviceName || '').toLowerCase(),
                 ),
             )
             .map(p => ({
-              name: p.deviceName || 'Nearby Device',
+              name: p.deviceName || 'SecureShare Device',
               ip: '',
               port: PORT,
               isWifiDirect: true,
@@ -169,7 +199,9 @@ export default function SendScreen({ navigation }: Props) {
   async function pickFiles() {
     try {
       const result = await DocumentPicker.getDocumentAsync({
-        copyToCacheDirectory: false,
+        // BUG-19 FIX: copyToCacheDirectory=true ensures Android content:// URIs are
+        // materialized to file:// paths that expo-file-system can read with position/length.
+        copyToCacheDirectory: true,
         multiple: true,
       });
       if (result.canceled) return;
@@ -192,7 +224,13 @@ export default function SendScreen({ navigation }: Props) {
       return;
     }
 
-    // Direct Wi-Fi Direct flow
+    // Direct LAN flow — ALWAYS prefer direct IP if available (super fast, no OS prompt)
+    if (device.ip && device.ip !== '') {
+      startSendProcess(device, false);
+      return;
+    }
+
+    // Direct Wi-Fi Direct flow (only if no IP is known, e.g. offline P2P)
     if (device.isWifiDirect && device.p2pAddress) {
       setConnectingDevice(device);
       setConnecting(true);
@@ -216,14 +254,14 @@ export default function SendScreen({ navigation }: Props) {
         setConnecting(false);
         cancelConnectionRef.current = null;
         Alert.alert(
-          'Quick Share Connection',
-          err?.message ?? 'Could not connect. Make sure the receiver is on the Quick Share screen.',
+          'Connection Failed',
+          err?.message ?? 'Could not connect. Make sure the receiver is on the Receive screen.',
         );
       }
       return;
     }
 
-    // Direct LAN flow
+    // Direct LAN fallback
     startSendProcess(device, false);
   }
 
@@ -319,7 +357,7 @@ export default function SendScreen({ navigation }: Props) {
           activeOpacity={0.7}>
           <Text style={styles.backArrow}>‹</Text>
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Quick Share</Text>
+        <Text style={styles.headerTitle}>Send</Text>
         <View style={styles.headerRightPlaceholder} />
       </View>
 
@@ -407,7 +445,7 @@ export default function SendScreen({ navigation }: Props) {
                 <ActivityIndicator color={C.primary} size="small" />
               </View>
               <Text style={styles.scanningNotice}>
-                {scanning ? 'Searching for nearby Quick Share devices...' : 'Ready to search'}
+                {scanning ? 'Searching for nearby SecureShare devices...' : 'Ready to search'}
               </Text>
               <Text style={styles.scanningHint}>
                 Make sure the other device is on the Receive screen.
@@ -435,7 +473,7 @@ export default function SendScreen({ navigation }: Props) {
                       {device.name}
                     </Text>
                     <View style={styles.quickShareBadge}>
-                      <Text style={styles.quickShareBadgeText}>Quick Share</Text>
+                      <Text style={styles.quickShareBadgeText}>SecureShare</Text>
                     </View>
                   </TouchableOpacity>
                 );

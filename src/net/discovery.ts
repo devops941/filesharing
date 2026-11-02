@@ -3,6 +3,9 @@ import { Platform } from 'react-native';
 import TcpSocket from 'react-native-tcp-socket';
 import { SERVICE_TYPE, PORT } from '../config';
 import { isLanIP, isWifiDirectIP, detectLocalIP } from '../utils/networkSettings';
+import { Buffer } from 'buffer';
+import { newSession, helloPayload } from '../crypto/session';
+import { T, frame, FrameParser } from './protocol';
 
 export type Device = {
   name: string;
@@ -49,9 +52,12 @@ export function startScan(onFound: (d: Device) => void) {
     // Avoid unhandled error crashes from zeroconf
   });
 
+  // Detect own IP so we can filter ourselves out of discovery results
   let mySubnetPrefix = '';
+  let myLocalIP = '';
   detectLocalIP().then(myIp => {
     if (myIp && myIp.includes('.')) {
+      myLocalIP = myIp;
       mySubnetPrefix = myIp.slice(0, myIp.lastIndexOf('.') + 1);
     }
   }).catch(() => {});
@@ -62,45 +68,58 @@ export function startScan(onFound: (d: Device) => void) {
       rawList.push(s.host);
     }
 
-    const valid = rawList.filter(
+    const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/;
+    const ipv4List = rawList.filter(
       a =>
         a &&
         typeof a === 'string' &&
+        ipv4Regex.test(a) &&
         !a.startsWith('127.') &&
-        !a.startsWith('169.254.') &&
-        a !== '::1' &&
-        !a.startsWith('fe80:'),
+        !a.startsWith('169.254.'),
     );
 
     // Filter out Wi-Fi Direct virtual IP 192.168.49.x unless local device is also on it
-    const lan = valid.filter(a => isLanIP(a) && !isWifiDirectIP(a));
+    const lan = ipv4List.filter(a => isLanIP(a) && !isWifiDirectIP(a));
 
     // Best: same subnet as sender (e.g. 192.168.1.x)
     const sameSubnet = mySubnetPrefix ? lan.find(a => a.startsWith(mySubnetPrefix)) : undefined;
     const ip =
       sameSubnet ??
       lan[0] ??
-      valid.find(a => isLanIP(a)) ??
-      valid[0];
+      ipv4List.find(a => isLanIP(a)) ??
+      ipv4List[0];
 
-    if (ip) {
-      onFound({
-        name: s.name,
-        ip,
-        port: s.port || PORT,
-        platform: s.txt?.platform,
-        addresses: valid,
-      });
-    }
+    if (!ip) return;
+
+    // SELF-FILTER: Never show own device in the nearby list
+    if (myLocalIP && ip === myLocalIP) return;
+
+    onFound({
+      name: s.name,
+      ip,
+      port: s.port || PORT,
+      platform: s.txt?.platform,
+      addresses: ipv4List,
+    });
   });
+
+  // BUG-12 FIX: Stop any previous scan before starting a new one
+  try {
+    zc.stop();
+  } catch {}
 
   // Start mDNS zeroconf browse
   try {
     zc.scan(SERVICE_TYPE, 'tcp', 'local.');
   } catch {}
 
-  // Parallel active subnet probe (handles routers with AP isolation or mobile hotspots)
-  probeSubnet(onFound, probeCancelRef).catch(() => {});
+  // Parallel active subnet probe with probe payload to fetch real device names
+  newSession().then(probeKp => {
+    const probePayload = frame(T.HELLO, helloPayload(probeKp, '', true));
+    probeSubnet(onFound, probeCancelRef, () => myLocalIP, probePayload).catch(() => {});
+  }).catch(() => {
+    probeSubnet(onFound, probeCancelRef, () => myLocalIP).catch(() => {});
+  });
 }
 
 export function stopScan() {
@@ -116,10 +135,13 @@ export function stopScan() {
 /**
  * Actively probes the local Wi-Fi / hotspot subnet on PORT.
  * Guarantees discovery between 2 phones even if the router blocks multicast or on mobile hotspots.
+ * skipIPGetter: called at each host to get own IP — skips that IP to prevent self-connection.
  */
 async function probeSubnet(
   onFound: (d: Device) => void,
   cancelRef: { cancelled: boolean },
+  skipIPGetter?: () => string,
+  probePayload?: Buffer,
 ) {
   try {
     const localIp = await detectLocalIP();
@@ -131,20 +153,25 @@ async function probeSubnet(
 
     // Prioritized candidate list:
     // 1. Hotspot gateway / Router gateway (.1)
-    // 2. Immediate neighbors around our IP (.myLast - 10 to .myLast + 10)
-    // 3. Common DHCP range (.2 to .40)
+    // 2. Immediate neighbors around our IP (.myLast - 15 to .myLast + 15)
+    // 3. Common DHCP range (.2 to .50)
+    // 4. Remaining subnet addresses (.51 to .254)
     const hostsToProbe = new Set<number>();
     hostsToProbe.add(1);
 
-    for (let i = Math.max(2, myLast - 10); i <= Math.min(254, myLast + 10); i++) {
+    for (let i = Math.max(2, myLast - 15); i <= Math.min(254, myLast + 15); i++) {
       if (i !== myLast) hostsToProbe.add(i);
     }
-    for (let i = 2; i <= 40; i++) {
+    for (let i = 2; i <= 50; i++) {
+      if (i !== myLast) hostsToProbe.add(i);
+    }
+    // Full subnet fallback (probed after priority candidates)
+    for (let i = 51; i <= 254; i++) {
       if (i !== myLast) hostsToProbe.add(i);
     }
 
     const hostList = Array.from(hostsToProbe);
-    const BATCH_SIZE = 12;
+    const BATCH_SIZE = 14;
 
     for (let b = 0; b < hostList.length; b += BATCH_SIZE) {
       if (cancelRef.cancelled) break;
@@ -152,14 +179,22 @@ async function probeSubnet(
       await Promise.all(
         batch.map(h => {
           const targetIp = `${subnetPrefix}${h}`;
-          return probeIp(targetIp, onFound);
+          // SELF-FILTER: Skip own IP at probe time to prevent self-connection
+          const skipIP = skipIPGetter ? skipIPGetter() : '';
+          if (skipIP && targetIp === skipIP) return Promise.resolve();
+          return probeIp(targetIp, onFound, cancelRef, probePayload);
         }),
       );
     }
   } catch {}
 }
 
-function probeIp(targetIp: string, onFound: (d: Device) => void): Promise<void> {
+function probeIp(
+  targetIp: string,
+  onFound: (d: Device) => void,
+  cancelRef: { cancelled: boolean },
+  probePayload?: Buffer,
+): Promise<void> {
   return new Promise(resolve => {
     let resolved = false;
     let client: any = null;
@@ -173,20 +208,58 @@ function probeIp(targetIp: string, onFound: (d: Device) => void): Promise<void> 
       resolve();
     };
 
-    const timer = setTimeout(done, 500);
+    const timer = setTimeout(done, 1200);
 
     try {
       client = TcpSocket.createConnection({ host: targetIp, port: PORT }, () => {
-        clearTimeout(timer);
-        onFound({
-          name: `Nearby Device (${targetIp})`,
-          ip: targetIp,
-          port: PORT,
-          addresses: [targetIp],
-        });
-        done();
+        if (probePayload) {
+          try {
+            client.write(probePayload);
+          } catch {
+            done();
+          }
+        } else {
+          clearTimeout(timer);
+          if (!cancelRef.cancelled) {
+            onFound({
+              name: `Nearby Device (${targetIp})`,
+              ip: targetIp,
+              port: PORT,
+              addresses: [targetIp],
+            });
+          }
+          done();
+        }
       });
-      client.setTimeout(500);
+      client.setTimeout(1200);
+
+      if (probePayload) {
+        const parser = new FrameParser((type, p) => {
+          clearTimeout(timer);
+          if (type === T.HELLO && !cancelRef.cancelled) {
+            try {
+              const info = JSON.parse(p.toString('utf8'));
+              const realName = info.deviceName || `Nearby Device (${targetIp})`;
+              onFound({
+                name: realName,
+                ip: targetIp,
+                port: PORT,
+                addresses: [targetIp],
+              });
+            } catch {
+              onFound({
+                name: `Nearby Device (${targetIp})`,
+                ip: targetIp,
+                port: PORT,
+                addresses: [targetIp],
+              });
+            }
+          }
+          done();
+        });
+
+        client.on('data', (d: any) => parser.push(d));
+      }
 
       client.on('error', () => {
         clearTimeout(timer);

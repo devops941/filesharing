@@ -6,10 +6,11 @@ import { CHUNK_SIZE } from '../config';
 export async function readChunks(
   uri: string,
   onChunk: (b64: string) => Promise<void>,
+  fallbackSize?: number,
 ): Promise<void> {
   const info = await FileSystem.getInfoAsync(uri);
   if (!info.exists) throw new Error(`File not found: ${uri}`);
-  const fileSize = info.size ?? 0;
+  const fileSize = info.size ?? fallbackSize ?? 0;
   if (fileSize === 0) {
     await onChunk('');
     return;

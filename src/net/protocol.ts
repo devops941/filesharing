@@ -34,9 +34,13 @@ export class FrameParser {
   constructor(private onFrame: (t: T, p: Buffer) => Promise<void> | void) {}
 
   push(data: Buffer) {
+    // BUG-4 FIX: Always copy data into owned buffer. react-native-tcp-socket may
+    // reuse its internal buffer on subsequent reads, which would silently corrupt
+    // the data we just received if we held a reference to the original.
+    const incoming = Buffer.from(data) as any;
     this.buf = this.buf.length
-      ? (Buffer.concat([this.buf, data]) as any)
-      : data;
+      ? (Buffer.concat([this.buf, incoming]) as any)
+      : incoming;
 
     while (this.buf.length >= 4) {
       const len = this.buf.readUInt32BE(0);

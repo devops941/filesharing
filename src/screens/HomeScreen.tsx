@@ -71,10 +71,8 @@ export default function HomeScreen({ navigation }: Props) {
             <Text style={styles.brandIconEmoji}>⚡</Text>
           </View>
         </View>
-        <Text style={styles.title}>Quick Share</Text>
-        <Text style={styles.subtitle}>
-          Fast, direct peer-to-peer file sharing
-        </Text>
+        <Text style={styles.title}> Share</Text>
+
       </View>
 
       {/* Middle action cards */}

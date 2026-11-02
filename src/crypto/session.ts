@@ -63,11 +63,17 @@ export function decryptor(key: Uint8Array, header: Uint8Array) {
   // Returns { message, tag } — TAG_FINAL means file is complete and untampered
 }
 
-export const FINAL_TAG = (s as any).crypto_secretstream_xchacha20poly1305_TAG_FINAL as number;
+export const FINAL_TAG = ((s as any).crypto_secretstream_xchacha20poly1305_TAG_FINAL ?? 3) as number;
 
-export function helloPayload(kp: Keypair): Uint8Array {
+export function helloPayload(
+  kp: Keypair,
+  deviceName?: string,
+  isProbe = false,
+): Uint8Array {
   const json = JSON.stringify({
     publicKey: Buffer.from(kp.publicKey).toString('base64'),
+    deviceName: deviceName || '',
+    probe: isProbe,
     v: 1,
   });
   return Buffer.from(json);
